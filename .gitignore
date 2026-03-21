@@ -1,0 +1,6 @@
+venv/
+yolov8n.pt
+yolov8s.pt
+__pycache__/
+*.pyc
+nohup.out
