@@ -4,7 +4,7 @@ import threading
 from ultralytics import YOLO
 
 MODELO_PATH = 'yolov8n.pt'
-STREAM_URL = 'rtsp://admin:123456@192.168.1.24:554/live/ch0'
+STREAM_URL = 'rtsp://admin:123456@192.168.1.24:554'
 
 CONFIANZA_VISUAL = 0.45
 CONFIANZA_ALERTA = 0.60
