@@ -1,0 +1,412 @@
+// =============================================================================
+// Cámaras-IA · Esquema de base de datos (PostgreSQL) — nombres en español
+// Sistema de videovigilancia con detección de intrusión (personas).
+// Alineado con los scripts:
+//   - Producto/codigo_fuente/detector.py   (YOLOv8 + ByteTrack)
+//   - Producto/codigo_fuente/analizador.py (LLaVA vía Ollama)
+//
+// MVP: notificaciones por Telegram a UNA SOLA cuenta de prueba.
+// chat_id y bot_token viven en configuracion_sistema.
+//
+// Pegar en https://dbdiagram.io/d para renderizar el ER.
+// =============================================================================
+
+Project camaras_ia {
+  database_type: 'PostgreSQL'
+  Note: '''
+    # Cámaras-IA (MVP)
+    Esquema central: cámaras, eventos de detección YOLO,
+    análisis de escena con LLaVA, alertas, clips/fotogramas en MinIO/S3,
+    log de notificaciones Telegram (1 cuenta), usuarios con JWT y auditoría.
+  '''
+}
+
+// -----------------------------------------------------------------------------
+// 1. USUARIOS Y SEGURIDAD
+// -----------------------------------------------------------------------------
+
+Table usuarios {
+  id               uuid         [pk, default: `gen_random_uuid()`]
+  email            varchar(255) [unique, not null]
+  password_hash    varchar(255) [not null, note: 'bcrypt/argon2']
+  nombre_completo  varchar(150)
+  telefono         varchar(30)
+  activo           boolean      [not null, default: true]
+  ultimo_acceso_en timestamptz
+  creado_en        timestamptz  [not null, default: `now()`]
+  actualizado_en   timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    email
+    activo
+  }
+  Note: 'Cuentas con acceso al dashboard y API (JWT).'
+}
+
+Table roles {
+  id          smallserial [pk]
+  nombre      varchar(40) [unique, not null, note: 'admin | operador | visualizador']
+  descripcion varchar(200)
+}
+
+Table usuarios_roles {
+  usuario_id  uuid        [ref: > usuarios.id, not null]
+  rol_id      smallint    [ref: > roles.id, not null]
+  asignado_en timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (usuario_id, rol_id) [pk]
+  }
+}
+
+Table tokens_refresco {
+  id           uuid         [pk, default: `gen_random_uuid()`]
+  usuario_id   uuid         [ref: > usuarios.id, not null]
+  token_hash   varchar(128) [unique, not null]
+  user_agent   varchar(255)
+  ip_cliente   inet
+  expira_en    timestamptz  [not null]
+  revocado_en  timestamptz
+  creado_en    timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    usuario_id
+    expira_en
+  }
+  Note: 'JWT refresh tokens hasheados.'
+}
+
+// -----------------------------------------------------------------------------
+// 2. INFRAESTRUCTURA: SITIOS, CÁMARAS Y ZONAS
+// -----------------------------------------------------------------------------
+
+Table sitios {
+  id           uuid         [pk, default: `gen_random_uuid()`]
+  nombre       varchar(120) [not null, note: 'ej: Campo Norte']
+  direccion    varchar(255)
+  latitud      numeric(9,6)
+  longitud     numeric(9,6)
+  zona_horaria varchar(60)  [default: 'America/Argentina/Buenos_Aires']
+  creado_en    timestamptz  [not null, default: `now()`]
+}
+
+Table camaras {
+  id                     uuid         [pk, default: `gen_random_uuid()`]
+  sitio_id               uuid         [ref: > sitios.id, not null]
+  nombre                 varchar(120) [unique, not null, note: 'ej: Camara_Principal, Camara_Sonoff']
+  descripcion            varchar(255)
+
+  // Descubrimiento dinámico (detector.py usa ARP + MAC)
+  direccion_mac          macaddr      [unique, not null, note: 'ej: 08:EA:40:54:9B:F5']
+  ip_actual              inet         [note: 'Última IP descubierta por arp -a']
+  ip_respaldo            inet         [not null, note: 'Fallback si no se encuentra por MAC']
+  ip_actualizada_en      timestamptz
+
+  // Credenciales y ruta RTSP
+  usuario_rtsp           varchar(80)
+  password_rtsp_cifrada  bytea        [note: 'Cifrar con pgp_sym_encrypt']
+  puerto_rtsp            integer      [not null, default: 554]
+  ruta_rtsp              varchar(200) [not null, note: 'ej: live/ch0, av_stream/ch0']
+  mediamtx_path          varchar(120)
+
+  // Parámetros de captura / IA
+  modelo_hw              varchar(80)
+  resolucion_w           smallint
+  resolucion_h           smallint
+  fps                    smallint     [default: 15]
+  modo_analisis          varchar(20)  [not null, default: 'solo_yolo', note: 'solo_yolo | yolo_llava']
+  confianza_visual       numeric(4,3) [default: 0.45]
+  confianza_alerta       numeric(4,3) [default: 0.67]
+  procesar_cada_n_frames smallint     [default: 2]
+  duracion_alerta_seg    smallint     [default: 5]
+  frames_ausencia        smallint     [default: 92]
+  contexto_zona          varchar(120) [note: 'Texto pasado al prompt de LLaVA']
+
+  // Estado
+  activa                 boolean      [not null, default: true]
+  estado_salud           varchar(20)  [default: 'desconocido']
+  ultima_conexion_en     timestamptz
+  creado_en              timestamptz  [not null, default: `now()`]
+  actualizado_en         timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    sitio_id
+    activa
+    direccion_mac
+  }
+}
+
+Table zonas {
+  id         uuid         [pk, default: `gen_random_uuid()`]
+  camara_id  uuid         [ref: > camaras.id, not null]
+  nombre     varchar(120) [not null]
+  poligono   jsonb        [note: 'Opcional: puntos {x,y} normalizados 0-1']
+  prioridad  smallint     [not null, default: 1]
+  armada     boolean      [not null, default: true]
+  horario    jsonb
+  creado_en  timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    camara_id
+    armada
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 3. PIPELINE DE DETECCIÓN
+// -----------------------------------------------------------------------------
+
+Table eventos_deteccion {
+  id                bigserial    [pk]
+  camara_id         uuid         [ref: > camaras.id, not null]
+  capturado_en      timestamptz  [not null]
+  recibido_en       timestamptz  [not null, default: `now()`]
+  // Snapshot del frame (JPG en MinIO/S3)
+  snapshot_bucket   varchar(120) [default: 'camaras-ia-snapshots']
+  snapshot_key      varchar(500) [note: 'ej: 2026/04/<uuid>.jpg']
+  snapshot_anotado  boolean      [default: false, note: 'true si la imagen ya trae dibujados los bboxes']
+  frame_width       smallint
+  frame_height      smallint
+  modelo_yolo       varchar(60)  [default: 'yolov8n']
+  latencia_yolo_ms  integer
+  cantidad_personas smallint     [not null, default: 0]
+  estado            varchar(20)  [not null, default: 'pendiente', note: 'pendiente | analizado | descartado']
+  creado_en         timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    (camara_id, capturado_en) [name: 'idx_eventos_camara_tiempo']
+    estado
+    capturado_en
+  }
+  Note: 'Un registro por frame con >=1 persona detectada. El snapshot JPG vive en MinIO.'
+}
+
+Table detecciones {
+  id             bigserial    [pk]
+  evento_id      bigint       [ref: > eventos_deteccion.id, not null]
+  clase_nombre   varchar(40)  [not null, default: 'person']
+  clase_id       smallint     [not null, default: 0]
+  confianza      numeric(5,4) [not null]
+  bbox_x         numeric(6,5) [not null]
+  bbox_y         numeric(6,5) [not null]
+  bbox_w         numeric(6,5) [not null]
+  bbox_h         numeric(6,5) [not null]
+  id_rastreo     integer      [note: 'track_id de ByteTrack (persist=True)']
+  en_zona_id     uuid         [ref: > zonas.id]
+
+  Indexes {
+    evento_id
+    en_zona_id
+    id_rastreo
+  }
+}
+
+Table analisis_escena {
+  id                bigserial    [pk]
+  evento_id         bigint       [ref: > eventos_deteccion.id, unique, not null]
+  modelo            varchar(60)  [default: 'llava']
+  contexto_zona     varchar(120)
+  prompt_usado      text
+
+  // JSON que devuelve analizador.py
+  sospechoso        boolean      [not null, default: false]
+  nivel             varchar(10)  [not null, default: 'bajo', note: 'alto | medio | bajo']
+  descripcion       text
+  personas          smallint     [not null, default: 0]
+  acciones          text
+  tiempo_analisis_s numeric(6,2)
+
+  // Observabilidad
+  estado            varchar(20)  [not null, default: 'ok', note: 'ok | timeout | error_json | error']
+  error_msg         text
+  respuesta_cruda   jsonb
+  creado_en         timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    nivel
+    sospechoso
+    creado_en
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 4. ALERTAS Y REGLAS
+// -----------------------------------------------------------------------------
+
+Table reglas_alerta {
+  id                  uuid         [pk, default: `gen_random_uuid()`]
+  nombre              varchar(120) [not null]
+  camara_id           uuid         [ref: > camaras.id]
+  zona_id             uuid         [ref: > zonas.id]
+  min_confianza       numeric(4,3) [not null, default: 0.67]
+  nivel_minimo        varchar(10)  [default: 'bajo']
+  requiere_sospechoso boolean      [default: false]
+  horario             jsonb
+  enfriamiento_s      integer      [not null, default: 60]
+  severidad           varchar(20)  [not null, default: 'alta']
+  habilitada          boolean      [not null, default: true]
+  creado_en           timestamptz  [not null, default: `now()`]
+  actualizado_en      timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    habilitada
+    camara_id
+  }
+}
+
+Table alertas {
+  id              uuid         [pk, default: `gen_random_uuid()`]
+  numero_alerta   bigint       [unique, not null, note: 'Contador global (alertas_totales)']
+  evento_id       bigint       [ref: > eventos_deteccion.id, not null]
+  analisis_id     bigint       [ref: > analisis_escena.id, note: 'NULL si la cámara es solo_yolo']
+  regla_id        uuid         [ref: > reglas_alerta.id]
+  camara_id       uuid         [ref: > camaras.id, not null]
+  zona_id         uuid         [ref: > zonas.id]
+  id_rastreo      integer      [note: 'track_id que disparó la alerta']
+
+  severidad       varchar(20)  [not null, default: 'alta']
+  estado          varchar(20)  [not null, default: 'abierta', note: 'abierta | reconocida | resuelta | descartada']
+  titulo          varchar(200) [not null]
+  mensaje         text
+  disparada_en    timestamptz  [not null, default: `now()`]
+  reconocida_en   timestamptz
+  reconocida_por  uuid         [ref: > usuarios.id]
+  resuelta_en     timestamptz
+  resuelta_por    uuid         [ref: > usuarios.id]
+  nota_resolucion text
+  metadatos       jsonb
+
+  Indexes {
+    (camara_id, disparada_en) [name: 'idx_alertas_camara_tiempo']
+    estado
+    disparada_en
+    id_rastreo
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5. MEDIA (referencias a MinIO/S3)
+// -----------------------------------------------------------------------------
+
+Table clips {
+  id             uuid         [pk, default: `gen_random_uuid()`]
+  alerta_id      uuid         [ref: > alertas.id]
+  camara_id      uuid         [ref: > camaras.id, not null]
+  object_key     varchar(500) [not null, note: 'ej: clips/2026/04/<uuid>.mp4']
+  bucket         varchar(120) [not null, default: 'camaras-ia-clips']
+  content_type   varchar(60)  [default: 'video/mp4']
+  duracion_s     numeric(6,2)
+  tamano_bytes   bigint
+  iniciado_en    timestamptz  [not null]
+  finalizado_en  timestamptz  [not null]
+  hls_playlist   varchar(500)
+  miniatura_key  varchar(500)
+  retener_hasta  timestamptz
+  creado_en      timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    alerta_id
+    camara_id
+    iniciado_en
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 6. NOTIFICACIONES TELEGRAM (MVP — una sola cuenta)
+// -----------------------------------------------------------------------------
+
+Table notificaciones {
+  id           bigserial    [pk]
+  alerta_id    uuid         [ref: > alertas.id, not null]
+  chat_id      bigint       [not null, note: 'chat_id de Telegram']
+  mensaje      text         [not null, note: 'Texto enviado al bot']
+  estado       varchar(20)  [not null, default: 'pendiente', note: 'pendiente | enviada | fallida']
+  intentos     smallint     [not null, default: 0]
+  ultimo_error text
+  telegram_message_id bigint [note: 'ID que devuelve Telegram si se envió OK']
+  enviada_en   timestamptz
+  creado_en    timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    alerta_id
+    estado
+    creado_en
+  }
+  Note: '''
+    Log de mensajes enviados por el bot.
+    El bot_token y el chat_id destino viven en configuracion_sistema.
+  '''
+}
+
+// -----------------------------------------------------------------------------
+// 7. OPERACIONES
+// -----------------------------------------------------------------------------
+
+Table salud_camaras {
+  id            bigserial    [pk]
+  camara_id     uuid         [ref: > camaras.id, not null]
+  estado        varchar(20)  [not null]
+  latencia_ms   integer
+  fps_observado numeric(5,2)
+  error_msg     text
+  verificado_en timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    (camara_id, verificado_en)
+  }
+}
+
+Table configuracion_sistema {
+  clave           varchar(80) [pk]
+  valor           jsonb       [not null]
+  descripcion     varchar(255)
+  actualizado_por uuid        [ref: > usuarios.id]
+  actualizado_en  timestamptz [not null, default: `now()`]
+  Note: '''
+    Claves MVP:
+      - CONFIANZA_VISUAL         (0.45)
+      - CONFIANZA_ALERTA         (0.67)
+      - PROCESAR_CADA_N_FRAMES   (2)
+      - DURACION_ALERTA_SEG      (5)
+      - FRAMES_AUSENCIA          (92)
+      - OLLAMA_URL, MODELO_YOLO, MODELO_LLAVA, TIMEOUT_LLAVA
+      - TELEGRAM_BOT_TOKEN       (string)
+      - TELEGRAM_CHAT_ID         (bigint de la única cuenta destino)
+      - TELEGRAM_HABILITADO      (true/false)
+  '''
+}
+
+// -----------------------------------------------------------------------------
+// GRUPOS LÓGICOS
+// -----------------------------------------------------------------------------
+
+TableGroup seguridad {
+  usuarios
+  roles
+  usuarios_roles
+  tokens_refresco
+}
+
+TableGroup infraestructura {
+  sitios
+  camaras
+  zonas
+}
+
+TableGroup pipeline_ia {
+  eventos_deteccion
+  detecciones
+  analisis_escena
+}
+
+TableGroup alertamiento {
+  reglas_alerta
+  alertas
+  clips
+  notificaciones
+}
+
+TableGroup operaciones {
+  salud_camaras
+  configuracion_sistema
+}
