@@ -1,47 +1,72 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
+import CameraToolbar from '../components/camera/CameraToolbar';
+import CameraGrid from '../components/camera/CameraGrid';
 import { useCameras } from '../hooks/useCameras';
 import { useWebSocket } from '../hooks/useWebSocket';
-import CameraGrid from '../components/camera/CameraGrid';
-import AlertSection from '../components/alerts/AlertSection';
 
+/**
+ * Dashboard
+ *
+ * Página principal del sistema.
+ * Aquí se conectan los datos reales (API + WebSocket) con la UI.
+ *
+ * Este archivo actúa como punto de unión:
+ * - obtiene cámaras (API)
+ * - obtiene detecciones (WebSocket)
+ * - controla el layout del grid
+ *
+ * No renderiza lógica compleja, solo organiza todo.
+ */
 const Dashboard = () => {
-  // 1. Obtener lista de cámaras (HTTP)
+  // Layout actual del grid (lo cambia el toolbar)
+  const [layout, setLayout] = useState('2x2');
+
+  // Cámaras desde backend
   const { cameras, loading, error } = useCameras();
-  
-  // 2. Estado local para almacenar el flujo de alertas del WS
-  const [alerts, setAlerts] = useState([]);
 
-  // Callback memorizado para evitar re-renderizados innecesarios del Hook WS
-  const handleNewAlert = useCallback((newAlert) => {
-    setAlerts((prevAlerts) => {
-      // Mantiene un buffer de las últimas 100 alertas para no saturar la memoria
-      return [newAlert, ...prevAlerts].slice(0, 100);
-    });
-  }, []);
+  // Detecciones en tiempo real (IA)
+  const { detectionsMap } = useWebSocket();
 
-  // 3. Conexión WebSocket para detecciones (YOLO/FastAPI)
-  const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/alerts';
-  useWebSocket(wsUrl, handleNewAlert);
+  // Mapeo simple de layout → columnas del grid
+  const layoutClasses = {
+    '1x1': 'grid-cols-1',
+    '2x2': 'grid-cols-2',
+    '3x3': 'grid-cols-3',
+  };
 
   return (
-    <div className="flex h-screen w-full bg-black overflow-hidden font-sans">
-      {/* Columna Principal: Grilla de Cámaras (ocupa el espacio restante) */}
-      <main className="flex-1 flex flex-col min-w-0 relative">
-        {loading && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 text-blue-400 font-mono text-sm tracking-widest uppercase">
-            Cargando fuentes de video...
-          </div>
-        )}
-        {error && (
-          <div className="absolute top-4 left-4 z-50 bg-red-900/90 text-white px-4 py-2 rounded text-xs font-mono">
-            Error: {error}
-          </div>
-        )}
-        <CameraGrid cameras={cameras} />
-      </main>
+    <div className="flex flex-col w-full h-full">
 
-      {/* Columna Lateral: Panel de Alertas */}
-      <AlertSection alerts={alerts} />
+      {/* Toolbar: solo cambia el layout */}
+      <CameraToolbar
+        currentLayout={layout}
+        onLayoutChange={setLayout}
+      />
+
+      {/* Estado de carga inicial */}
+      {loading && (
+        <div className="flex-1 flex items-center justify-center text-gray-400 font-mono text-sm">
+          Cargando cámaras...
+        </div>
+      )}
+
+      {/* Error de API */}
+      {error && (
+        <div className="flex-1 flex items-center justify-center text-red-500 font-mono text-sm">
+          Error al cargar cámaras
+        </div>
+      )}
+
+      {/* Grid principal (solo cuando hay datos) */}
+      {!loading && !error && (
+        <div className="flex-1 min-h-0">
+          <CameraGrid
+            cameras={cameras}
+            detectionsMap={detectionsMap}
+            layoutClass={layoutClasses[layout]}
+          />
+        </div>
+      )}
     </div>
   );
 };
