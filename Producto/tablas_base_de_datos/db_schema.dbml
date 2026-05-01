@@ -354,6 +354,29 @@ Table salud_camaras {
   Indexes {
     (camara_id, verificado_en)
   }
+  Note: 'Heartbeats del hardware (cámaras RTSP).'
+}
+
+Table salud_servicios {
+  id            bigserial    [pk]
+  servicio      varchar(40)  [not null, note: 'detector | yolo | llava | telegram_worker | api | minio | postgres | redis']
+  estado        varchar(20)  [not null, note: 'online | degradado | offline']
+  latencia_ms   integer
+  metrica       jsonb        [note: 'Datos variables por servicio: {"fps":8.2}, {"cola":3}, {"pendientes":5}, etc.']
+  error_msg     text
+  verificado_en timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    (servicio, verificado_en)
+  }
+  Note: '''
+    Heartbeats de componentes software (IA + backend).
+    Paralelo a salud_camaras (hardware).
+    Permite detectar caídas proactivamente aunque no haya actividad de cámara
+    (ej. Ollama caído a las 3 AM sin eventos).
+    En schema.sql existe la vista v_salud_sistema que une esta tabla con camaras
+    para el endpoint /health.
+  '''
 }
 
 Table configuracion_sistema {
@@ -408,5 +431,6 @@ TableGroup alertamiento {
 
 TableGroup operaciones {
   salud_camaras
+  salud_servicios
   configuracion_sistema
 }

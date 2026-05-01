@@ -56,10 +56,13 @@ except ImportError as e:
 # Carga automática de .env si está disponible (opcional pero recomendado)
 try:
     from dotenv import load_dotenv
-    # Busca un .env en la misma carpeta que db.py
-    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.isfile(_env_path):
-        load_dotenv(_env_path)
+    # Busca el .env en codigo_fuente/ (un nivel arriba de base_datos/),
+    # con fallback a la misma carpeta del .py.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for _candidate in (os.path.join(_here, "..", ".env"), os.path.join(_here, ".env")):
+        if os.path.isfile(_candidate):
+            load_dotenv(_candidate)
+            break
 except ImportError:
     pass  # python-dotenv no instalado, se ignora
 
@@ -181,7 +184,8 @@ class DB:
             return conn.execute(
                 """
                 SELECT id, nombre, direccion_mac::text AS direccion_mac,
-                       ip_actual::text AS ip_actual, ip_respaldo::text AS ip_respaldo,
+                       host(ip_actual)   AS ip_actual,
+                       host(ip_respaldo) AS ip_respaldo,
                        usuario_rtsp, puerto_rtsp, ruta_rtsp,
                        modo_analisis, confianza_visual, confianza_alerta,
                        procesar_cada_n_frames, duracion_alerta_seg, frames_ausencia,
@@ -402,6 +406,44 @@ class DB:
                 """,
                 (usuario_id, nota, alerta_id),
             )
+
+    # =========================================================================
+    # SALUD DE SERVICIOS (heartbeats de IA + backend)
+    # =========================================================================
+
+    @_safe()
+    def reportar_salud_servicio(
+        self,
+        servicio: str,
+        estado: str,
+        latencia_ms: int | None = None,
+        metrica: dict | None = None,
+        error_msg: str | None = None,
+    ) -> None:
+        """
+        Inserta un heartbeat en salud_servicios.
+        servicio: 'detector' | 'yolo' | 'llava' | 'telegram_worker' | 'api' | 'minio' | 'postgres'
+        estado:   'online' | 'degradado' | 'offline'
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO salud_servicios
+                    (servicio, estado, latencia_ms, metrica, error_msg)
+                VALUES (%s, %s, %s, %s::jsonb, %s)
+                """,
+                (
+                    servicio, estado, latencia_ms,
+                    json.dumps(metrica) if metrica else None,
+                    error_msg,
+                ),
+            )
+
+    @_safe(default=[])
+    def salud_sistema(self) -> list[dict]:
+        """Lee la vista v_salud_sistema (cámaras + servicios, último estado)."""
+        with self._conn() as conn:
+            return conn.execute("SELECT * FROM v_salud_sistema").fetchall()
 
     # =========================================================================
     # NOTIFICACIONES (Telegram)

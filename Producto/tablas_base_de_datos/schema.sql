@@ -329,6 +329,26 @@ CREATE TABLE salud_camaras (
 );
 CREATE INDEX idx_salud_camara_tiempo ON salud_camaras(camara_id, verificado_en DESC);
 
+-- Heartbeats de servicios de software (IA + backend). Paralelo a salud_camaras.
+-- El detector/analizador/worker/api escriben acá cada N seg para decir "estoy vivo".
+-- Permite detectar caídas proactivamente aunque no haya actividad de cámara.
+CREATE TABLE salud_servicios (
+    id            BIGSERIAL PRIMARY KEY,
+    servicio      VARCHAR(40) NOT NULL
+                  CHECK (servicio IN ('detector','yolo','llava','telegram_worker','api','minio','postgres','redis')),
+    estado        VARCHAR(20) NOT NULL
+                  CHECK (estado IN ('online','degradado','offline')),
+    latencia_ms   INTEGER,
+    metrica       JSONB,
+    error_msg     TEXT,
+    verificado_en TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_salud_servicio_tiempo ON salud_servicios(servicio, verificado_en DESC);
+COMMENT ON TABLE salud_servicios IS
+    'Heartbeats de componentes software. Complementa salud_camaras (hardware).';
+COMMENT ON COLUMN salud_servicios.metrica IS
+    'Datos variables por servicio: {"fps":8.2} yolo, {"cola":3} llava, {"pendientes":5} worker, etc.';
+
 CREATE TABLE configuracion_sistema (
     clave           VARCHAR(80) PRIMARY KEY,
     valor           JSONB NOT NULL,
@@ -355,6 +375,37 @@ INSERT INTO configuracion_sistema (clave, valor, descripcion) VALUES
 -- =============================================================================
 -- 8. VISTA ÚTIL
 -- =============================================================================
+
+-- Vista unificada para /health: junta cámaras (hardware) + servicios (software).
+-- Trae SOLO el estado más reciente de cada componente (DISTINCT ON).
+CREATE VIEW v_salud_sistema AS
+SELECT
+    'camara'::VARCHAR          AS tipo,
+    c.nombre                   AS componente,
+    c.estado_salud             AS estado,
+    c.ultima_conexion_en       AS visto_en,
+    NULL::INTEGER              AS latencia_ms,
+    NULL::JSONB                AS metrica,
+    NULL::TEXT                 AS error_msg,
+    EXTRACT(EPOCH FROM (now() - c.ultima_conexion_en))::INT AS segundos_sin_reporte
+FROM camaras c
+WHERE c.activa
+UNION ALL
+SELECT
+    'servicio'::VARCHAR        AS tipo,
+    s.servicio                 AS componente,
+    s.estado                   AS estado,
+    s.verificado_en            AS visto_en,
+    s.latencia_ms,
+    s.metrica,
+    s.error_msg,
+    EXTRACT(EPOCH FROM (now() - s.verificado_en))::INT AS segundos_sin_reporte
+FROM (
+    SELECT DISTINCT ON (servicio)
+        servicio, estado, verificado_en, latencia_ms, metrica, error_msg
+    FROM salud_servicios
+    ORDER BY servicio, verificado_en DESC
+) s;
 
 CREATE VIEW v_alertas_completas AS
 SELECT
