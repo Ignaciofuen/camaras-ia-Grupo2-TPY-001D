@@ -1,34 +1,39 @@
 import CameraCard from './CameraCard';
 
-export default function CameraGrid() {
-  // Cuando tengas la API, esto vendrá de PostgreSQL.
-  // Por ahora, apuntamos directo a MediaMTX tal como lo diseñaron.
-  const cameras = [
-    { id: 'cam1', name: 'Entrada Principal', url: 'http://localhost:8888/cam1/index.m3u8' },
-    { id: 'cam2', name: 'Zona Carga (Bodega)', url: 'http://localhost:8888/cam2/index.m3u8' },
-    // Puedes agregar más si tu MediaMTX redistribuye más flujos
-  ];
+/**
+ * CameraGrid
+ * Contenedor visual responsivo para múltiples transmisiones de video.
+ * Carece de lógica de negocio o fetch; puramente presentacional.
+ * * @param {Object} props
+ * @param {Array} props.cameras - Colección de cámaras provenientes del backend
+ */
+const CameraGrid = ({ cameras = [] }) => {
+  // Estado vacío defensivo
+  if (!cameras || cameras.length === 0) {
+    return (
+      <div className="flex flex-col w-full h-full items-center justify-center bg-[#0a0a0a] border border-gray-800">
+        <svg className="w-12 h-12 text-gray-700 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        </svg>
+        <span className="text-gray-600 font-mono text-xs tracking-widest uppercase">
+          Sin cámaras asignadas a esta vista
+        </span>
+      </div>
+    );
+  }
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 h-full">
-      {cameras.map((cam) => (
-        <div key={cam.id} className="bg-black rounded-lg border border-gray-800 overflow-hidden relative group shadow-lg">
-          
-          {/* Overlay Superior: Nombre de cámara y Estado */}
-          <div className="absolute top-0 left-0 w-full p-2 bg-gradient-to-b from-black/80 to-transparent z-10 flex justify-between pointer-events-none">
-            <span className="text-sm font-semibold text-gray-200 drop-shadow-md">
-              {cam.name}
-            </span>
-            <span className="text-[10px] text-green-400 font-mono bg-green-400/10 px-2 py-0.5 rounded border border-green-500/30">
-              REC
-            </span>
-          </div>
-
-          {/* Componente del Reproductor (El que incluye tu código de HLS.js modificado) */}
-          <CameraCard streamUrl={cam.url} />
-          
-        </div>
+    /* Grid responsivo puro en CSS:
+      - bg-gray-900: Fondo oscuro para los separadores (gap)
+      - gap-[2px]: Separación mínima para aprovechar pantalla (estilo XProtect)
+      - auto-rows-fr: Obliga a que todas las filas tengan la misma altura
+    */
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 auto-rows-fr gap-[2px] p-[2px] bg-gray-900 w-full h-full overflow-y-auto custom-scrollbar">
+      {cameras.map((camera) => (
+        <CameraCard key={camera.id} camera={camera} />
       ))}
     </div>
   );
-}
+};
+
+export default CameraGrid;
