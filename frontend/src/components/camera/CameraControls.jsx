@@ -1,21 +1,30 @@
+import PropTypes from 'prop-types';
+
 /**
  * CameraControls
- * Barra de herramientas inferior para una cámara individual.
- * Estrictamente UI; ejecuta callbacks inyectados por el componente padre.
- * * @param {Object} props
- * @param {Function} props.onFullscreen - Callback para alternar pantalla completa
- * @param {Function} props.onToggleMute - Callback para mutear/desmutear el stream HLS
- * @param {Function} props.onSnapshot - Callback para capturar un frame del canvas/video
- * @param {boolean} props.isMuted - Estado actual del audio
+ *
+ * Barra de controles que aparece al pasar el mouse sobre la cámara.
+ *
+ * Este componente SOLO renderiza botones.
+ * No maneja lógica, todo se recibe por props desde el componente padre.
+ *
+ * Importante:
+ * El contenedor usa pointer-events-none para no bloquear la interacción de la tarjeta,
+ * pero los botones usan pointer-events-auto para sí poder hacer clic.
+ *
+ * Los callbacks permiten:
+ * - capturar imagen (snapshot)
+ * - activar/desactivar audio
+ * - pantalla completa
  */
-const CameraControls = ({ onFullscreen, onToggleMute, onSnapshot, isMuted }) => {
+const CameraControls = ({ onFullscreen, onToggleMute, onSnapshot, isMuted = true }) => {
   return (
-    <div className="absolute bottom-0 left-0 w-full p-2 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 flex justify-end items-center gap-2">
+    <div className="absolute bottom-0 left-0 w-full p-2 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 flex justify-end items-center gap-2 pointer-events-none">
       
-      {/* Botón Snapshot (Captura Forense) */}
+      {/* Snapshot */}
       <button 
         onClick={onSnapshot}
-        className="p-1.5 text-gray-300 hover:text-white hover:bg-white/20 rounded transition-colors"
+        className="pointer-events-auto p-1.5 text-gray-300 hover:text-white hover:bg-white/20 rounded transition-colors"
         title="Capturar Frame"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -24,15 +33,15 @@ const CameraControls = ({ onFullscreen, onToggleMute, onSnapshot, isMuted }) => 
         </svg>
       </button>
 
-      {/* Botón Audio */}
+      {/* Audio */}
       <button 
         onClick={onToggleMute}
-        className="p-1.5 text-gray-300 hover:text-white hover:bg-white/20 rounded transition-colors"
+        className="pointer-events-auto p-1.5 text-gray-300 hover:text-white hover:bg-white/20 rounded transition-colors"
         title={isMuted ? "Activar Audio" : "Silenciar"}
       >
         {isMuted ? (
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" clipRule="evenodd" />
+             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
           </svg>
         ) : (
@@ -42,10 +51,10 @@ const CameraControls = ({ onFullscreen, onToggleMute, onSnapshot, isMuted }) => 
         )}
       </button>
 
-      {/* Botón Fullscreen */}
+      {/* Fullscreen */}
       <button 
         onClick={onFullscreen}
-        className="p-1.5 text-gray-300 hover:text-white hover:bg-white/20 rounded transition-colors"
+        className="pointer-events-auto p-1.5 text-gray-300 hover:text-white hover:bg-white/20 rounded transition-colors"
         title="Pantalla Completa"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -54,6 +63,13 @@ const CameraControls = ({ onFullscreen, onToggleMute, onSnapshot, isMuted }) => 
       </button>
     </div>
   );
+};
+
+CameraControls.propTypes = {
+  onFullscreen: PropTypes.func,
+  onToggleMute: PropTypes.func,
+  onSnapshot: PropTypes.func,
+  isMuted: PropTypes.bool,
 };
 
 export default CameraControls;

@@ -1,19 +1,24 @@
+import PropTypes from 'prop-types';
+
 /**
  * CameraOverlay
- * Capa de visualización superpuesta al stream de video.
- * Muestra metadatos y está preparada estructuralmente para renderizar detecciones IA.
- * * @param {Object} props
- * @param {string} props.name - Nombre de la cámara
- * @param {'online'|'offline'} props.status - Estado actual
- * @param {Array} props.detections - (Placeholder) Detecciones de YOLO para pintar BBoxes
+ *
+ * UI sobre el video.
+ * Muestra nombre de cámara, estado (online/offline)
+ * y estado del stream (loading / error).
+ *
+ * No tiene lógica, solo renderiza lo que recibe.
  */
-const CameraOverlay = ({ name, status, detections = [] }) => {
+const CameraOverlay = ({ name, status, streamStatus }) => {
+  // indicador simple de si la cámara está activa
   const isOnline = status === 'online';
 
   return (
-    <div className="absolute inset-0 pointer-events-none z-20 flex flex-col">
+    // el padre (CameraCard) controla posicionamiento y capas
+    // aquí solo nos preocupamos del contenido visual
+    <div className="w-full h-full flex flex-col">
       
-      {/* Barra Superior OSD (On-Screen Display) */}
+      {/* barra superior */}
       <div className="w-full px-3 py-2 flex justify-between items-start bg-gradient-to-b from-black/80 via-black/40 to-transparent">
         <span className="text-gray-100 text-xs font-mono font-bold tracking-wide drop-shadow-md truncate pr-2">
           {name}
@@ -31,32 +36,45 @@ const CameraOverlay = ({ name, status, detections = [] }) => {
         </div>
       </div>
 
-      {/* Contenedor de Detecciones (IA) 
-        Aquí se mapearán las cajas de YOLO en un futuro. 
-        Mantiene pointer-events-none para no bloquear clics al video.
-      */}
-      <div className="flex-1 relative w-full h-full">
-        {detections.map((det) => (
-          // Placeholder estructural para futuros Bounding Boxes
-          <div 
-            key={det.id} 
-            className="absolute border-2 border-red-500 bg-red-500/20"
-            style={{
-              left: `${det.x}%`,
-              top: `${det.y}%`,
-              width: `${det.width}%`,
-              height: `${det.height}%`
-            }}
-          >
-            <span className="absolute -top-4 left-0 bg-red-500 text-white text-[9px] font-mono px-1">
-              {det.label} {det.confidence}%
+      {/* estado: cargando */}
+      {streamStatus === 'loading' && (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-2 opacity-80">
+            <div className="w-5 h-5 border-2 border-gray-600 border-t-white rounded-full animate-spin" />
+            <span className="text-gray-400 text-[10px] font-mono tracking-widest uppercase">
+              CARGANDO STREAM...
             </span>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
 
+      {/* estado: error */}
+      {streamStatus === 'error' && (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-2 opacity-90 bg-black/40 px-4 py-2 rounded">
+            <span className="text-red-500 text-xs font-mono tracking-wider font-bold">
+              ERROR DE CONEXIÓN
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* estado: reproduciendo (opcional, estilo VMS) */}
+      {streamStatus === 'playing' && (
+        <div className="absolute bottom-2 right-2">
+          <span className="text-[9px] text-green-400 font-mono opacity-70">
+            LIVE
+          </span>
+        </div>
+      )}
     </div>
   );
+};
+
+CameraOverlay.propTypes = {
+  name: PropTypes.string.isRequired,
+  status: PropTypes.oneOf(['online', 'offline']).isRequired,
+  streamStatus: PropTypes.oneOf(['loading', 'playing', 'error']).isRequired,
 };
 
 export default CameraOverlay;

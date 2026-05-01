@@ -56,8 +56,13 @@ const CameraCard = ({ camera, detections = [] }) => {
       </div>
 
       {/* capa interacción: botones */}
-      <div className="absolute inset-0 z-30">
-        <CameraControls cameraId={camera.id} />
+      <div className="absolute inset-0 z-30 pointer-events-none">
+        <CameraControls 
+          isMuted={isMuted} 
+          onToggleMute={handleToggleMute} 
+          onFullscreen={handleFullscreen} 
+          onSnapshot={handleSnapshot} 
+        />
       </div>
 
       {/* borde al hacer hover (feedback visual tipo VMS) */}

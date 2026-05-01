@@ -1,9 +1,10 @@
+import PropTypes from 'prop-types';
+
 /**
  * CameraToolbar
- * Controles globales sobre el Viewport principal (Ej: layouts de la grilla).
- * * @param {Object} props
- * @param {string|number} props.currentLayout - El layout activo (ej: '1x1', '2x2', '3x3')
- * @param {Function} props.onLayoutChange - Función que recibe el nuevo layout seleccionado
+ * * Controles globales sobre el Viewport principal (Ej: layouts de la grilla).
+ * * @param {string} currentLayout - El layout activo (ej: '1x1', '2x2', '3x3')
+ * @param {Function} onLayoutChange - Función que recibe el nuevo layout seleccionado
  */
 const CameraToolbar = ({ currentLayout, onLayoutChange }) => {
   const layouts = [
@@ -15,7 +16,7 @@ const CameraToolbar = ({ currentLayout, onLayoutChange }) => {
   return (
     <div className="w-full h-10 bg-[#161616] border-b border-gray-800 flex items-center px-4 justify-between shrink-0">
       
-      {/* Título de la vista (Opcional, útil para nombrar grupos de cámaras) */}
+      {/* Título de la vista */}
       <div className="text-gray-400 text-xs font-mono uppercase tracking-widest">
         Disposición de Vista
       </div>
@@ -42,6 +43,11 @@ const CameraToolbar = ({ currentLayout, onLayoutChange }) => {
       
     </div>
   );
+};
+
+CameraToolbar.propTypes = {
+  currentLayout: PropTypes.string.isRequired,
+  onLayoutChange: PropTypes.func.isRequired,
 };
 
 export default CameraToolbar;
