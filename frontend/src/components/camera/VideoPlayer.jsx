@@ -1,93 +1,69 @@
-import { useEffect, useRef } from 'react';
-import Hls from 'hls.js';
+import { useRef, useEffect } from 'react';
+import PropTypes from 'prop-types';
+import { useStream } from '../../hooks/useStream';
 
 /**
  * VideoPlayer
- * Componente puro para reproducir streams HLS.
- * Diseñado para consumir la salida de MediaMTX en tiempo real.
- * * @param {string} streamUrl - URL real del archivo .m3u8
+ *
+ * Este componente SOLO renderiza el <video>.
+ * No maneja lógica de HLS, errores ni reconexión.
+ *
+ * Toda esa lógica vive en el hook useStream.
+ *
+ * La idea es que este componente sea reutilizable
+ * y que no se rompa aunque cambie la lógica del stream.
+ *
+ * @param {string} streamUrl - URL del stream HLS (.m3u8)
+ * @param {function} onStatusChange - función opcional para avisar el estado al padre
  */
-const VideoPlayer = ({ streamUrl }) => {
+const VideoPlayer = ({ streamUrl, onStatusChange }) => {
+  // referencia directa al <video> del DOM
   const videoRef = useRef(null);
 
+  /**
+   * El hook se encarga de todo:
+   * - conectar al stream
+   * - manejar errores
+   * - reconectar si se cae
+   * - limpiar memoria
+   */
+  const { status } = useStream(videoRef, streamUrl);
+
+  /**
+   * Cada vez que cambia el estado del stream,
+   * se lo avisamos al componente padre (ej: CameraCard).
+   *
+   * Esto sirve para:
+   * - mostrar loading
+   * - mostrar error
+   * - cambiar overlays
+   *
+   * Importante: esto NO es lógica de negocio,
+   * solo estamos pasando información hacia arriba.
+   */
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !streamUrl) return;
-
-    let hls = null;
-
-    if (Hls.isSupported()) {
-      // Configuración orientada a latencia ultrabaja para VMS
-      hls = new Hls({
-        enableWorker: true,
-        liveSyncDurationCount: 3, // Mantiene el buffer lo más cerca posible del borde en vivo
-        maxLiveSyncPlaybackRate: 1.5, // Acelera levemente el video si el cliente se atrasa
-        manifestLoadingMaxRetry: 5, // Intentos de reconexión si MediaMTX reinicia
-        manifestLoadingRetryDelay: 1000,
-      });
-
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        // En navegadores modernos, autoPlay requiere muted=true
-        video.play().catch((err) => {
-          console.warn(`[VideoPlayer] Autoplay bloqueado o fallido para ${streamUrl}:`, err);
-        });
-      });
-
-      // Lógica de resiliencia frente a errores (Vital en producción)
-      hls.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              console.warn(`[VideoPlayer] Error de red HLS. Intentando recuperar ${streamUrl}...`);
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              console.warn(`[VideoPlayer] Error de media HLS. Intentando recuperar...`);
-              hls.recoverMediaError();
-              break;
-            default:
-              console.error(`[VideoPlayer] Error fatal HLS. Destruyendo instancia.`);
-              hls.destroy();
-              break;
-          }
-        }
-      });
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Fallback para Safari (Soporte nativo HLS de Apple)
-      video.src = streamUrl;
-      video.addEventListener('loadedmetadata', () => {
-        video.play().catch((err) => {
-          console.warn(`[VideoPlayer] Autoplay bloqueado en Safari para ${streamUrl}:`, err);
-        });
-      });
+    if (onStatusChange) {
+      onStatusChange(status);
     }
-
-    // Cleanup: Destruir la instancia de hls.js al desmontar
-    // Regla estricta: Si esto no se hace, los Web Workers saturarán la memoria RAM.
-    return () => {
-      if (hls) {
-        hls.destroy();
-      }
-      // Limpiar el source nativo si existe
-      if (video) {
-        video.removeAttribute('src');
-        video.load();
-      }
-    };
-  }, [streamUrl]);
+  }, [status, onStatusChange]);
 
   return (
     <video
       ref={videoRef}
       className="w-full h-full object-contain bg-black"
       autoPlay
-      muted // Obligatorio para autoPlay en Chrome/Firefox/Safari
-      playsInline // Evita que iOS abra el reproductor nativo en pantalla completa
+      muted // sin esto, autoplay falla en la mayoría de navegadores
+      playsInline // evita que en móviles (sobre todo iOS) se abra en pantalla completa
     />
   );
+};
+
+VideoPlayer.propTypes = {
+  // URL del stream, debería venir desde backend (MediaMTX)
+  streamUrl: PropTypes.string.isRequired,
+
+  // función opcional para que el padre reaccione al estado del stream
+  onStatusChange: PropTypes.func,
 };
 
 export default VideoPlayer;
