@@ -1,3 +1,12 @@
+# --- path setup: permite importar modulos hermanos (base_datos/, backend/, telegram/) ---
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+for _sub in ("base_datos", "backend", "telegram"):
+    _p = _os.path.join(_ROOT, _sub)
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+# --- end path setup ---
+
 import cv2
 import time
 import threading
@@ -29,6 +38,8 @@ else:
 
 from db import db  # [DB] capa de persistencia (PostgreSQL)
 from storage import storage  # [MINIO] capa de objetos para snapshots JPG
+from redis_cache import cache  # [REDIS] cooldown anti-spam + cache de estado
+from salud import reportar as reportar_salud, Heartbeat  # [SALUD] heartbeats
 
 # =============================================================================
 # [DB] INICIALIZACIÓN DE POSTGRES (antes que nada)
@@ -51,6 +62,61 @@ if STORAGE_OK:
     print("[MINIO] Conectado. Los snapshots se subirán al bucket de MinIO.")
 else:
     print("[MINIO] No disponible → los eventos se guardarán sin snapshot JPG.")
+
+# =============================================================================
+# [REDIS] INICIALIZACIÓN DE CACHE (cooldown de LLaVA + estado por cámara)
+# =============================================================================
+# Si Redis no responde, el detector sigue funcionando sin anti-spam
+# (mismo patrón de degradación que MinIO). cache.init() ya reporta salud.
+CACHE_OK = cache.init()
+if CACHE_OK:
+    print("[REDIS] Conectado. Cooldown anti-spam activo para LLaVA.")
+else:
+    print("[REDIS] No disponible → sin cooldown, LLaVA puede disparar repetido.")
+
+# =============================================================================
+# [SALUD] Reportes iniciales + estado compartido para los heartbeats
+# =============================================================================
+# Al arrancar marcamos el estado de cada dependencia. Después el heartbeat
+# del detector y de yolo actualizan cada 30s.
+if DB_OK:
+    reportar_salud("postgres", "online")
+else:
+    reportar_salud("postgres", "offline", error_msg="db.init() devolvió False")
+
+if STORAGE_OK:
+    reportar_salud("minio", "online")
+else:
+    reportar_salud("minio", "offline", error_msg="storage.init() devolvió False")
+
+reportar_salud("detector", "online")
+
+# Estado compartido que el heartbeat de YOLO publica cada 30s
+_salud_stats = {
+    "latencia_yolo_ms": 0,
+    "frames_procesados": 0,
+    "frames_con_personas": 0,
+    "alertas_totales": 0,
+}
+
+_hb_detector = Heartbeat(
+    "detector",
+    intervalo_s=30,
+    callback_metrica=lambda: {
+        "frames_procesados": _salud_stats["frames_procesados"],
+        "alertas_totales":   _salud_stats["alertas_totales"],
+    },
+).start()
+
+_hb_yolo = Heartbeat(
+    "yolo",
+    intervalo_s=30,
+    callback_metrica=lambda: {
+        "latencia_ms":          _salud_stats["latencia_yolo_ms"],
+        "frames_procesados":    _salud_stats["frames_procesados"],
+        "frames_con_personas":  _salud_stats["frames_con_personas"],
+    },
+).start()
 
 # --- CONFIGURACIÓN DE RED INTELIGENTE (MULTI-CÁMARA) ---
 
@@ -285,7 +351,7 @@ class AnalizadorAsync:
             finally:
                 self.cola.task_done()
 
-    def _procesar(self, frame, alerta_num, zona, evento_id, alerta_id):
+    def _procesar(self, frame, alerta_num, zona, evento_id, alerta_id, camara_nombre=None):
         print(f"\n[LLaVA] Analizando alerta #{alerta_num} de {zona} "
               f"(cola restante: {self.cola.qsize()})...")
         resultado = analizar_frame(frame, contexto=zona)
@@ -298,6 +364,47 @@ class AnalizadorAsync:
 
         print(f"  Personas:    {resultado.get('personas', 1)}\n  Acciones:    {resultado.get('acciones', 'N/A')}")
         print(f"  Descripcion: {resultado.get('descripcion', 'N/A')}\n  Tiempo:      {resultado.get('tiempo_analisis', 'N/A')}s\n{'='*45}\n")
+
+        # [REDIS] Actualizamos estado + cooldown con TTL variable según el nivel.
+        #         Esto corre POST-análisis; el cooldown "in-flight" lo setea el
+        #         dispatcher antes de encolar (para evitar pile-up).
+        if camara_nombre:
+            nivel_str = str(resultado.get("nivel", "bajo")).lower()
+            if nivel_str not in ("alto", "medio", "bajo"):
+                nivel_str = "bajo"
+            # Más peligroso = re-analizamos antes (el estado puede escalar rápido)
+            ttl_por_nivel = {"alto": 15, "medio": 30, "bajo": 60}
+            ttl = ttl_por_nivel[nivel_str]
+            cache.set_estado_camara(camara_nombre, {
+                "nivel":       nivel_str,
+                "personas":    int(resultado.get("personas", 0) or 0),
+                "descripcion": str(resultado.get("descripcion", ""))[:120],
+                "acciones":    str(resultado.get("acciones", ""))[:80],
+                "alerta_num":  alerta_num,
+                "evento_id":   evento_id,
+                "sospechoso":  bool(resultado.get("sospechoso", False)),
+            })
+            cache.set_cooldown(camara_nombre, "analisis", ttl_s=ttl)
+            print(f"[REDIS] Estado={nivel_str} | cooldown={ttl}s para {camara_nombre}")
+
+            # [REDIS PUBSUB] Publicamos al canal 'alertas' para que cualquier
+            #                cliente conectado vía SSE/WebSocket reciba la alerta
+            #                en tiempo real (dashboard, app móvil, etc.)
+            n_subs = cache.publish_alerta({
+                "tipo":        "analisis",
+                "camara":      camara_nombre,
+                "zona":        zona,
+                "nivel":       nivel_str,
+                "personas":    int(resultado.get("personas", 0) or 0),
+                "descripcion": str(resultado.get("descripcion", ""))[:200],
+                "acciones":    str(resultado.get("acciones", ""))[:120],
+                "sospechoso":  bool(resultado.get("sospechoso", False)),
+                "alerta_num":  alerta_num,
+                "evento_id":   evento_id,
+                "ts":          time.time(),
+            })
+            if n_subs and n_subs > 0:
+                print(f"[REDIS] Publicado a canal 'alertas' ({n_subs} subs)")
 
         # [DB] Persistimos el veredicto y lo vinculamos a la alerta
         if evento_id is not None:
@@ -330,9 +437,11 @@ class AnalizadorAsync:
         """Retrocompat: ahora devuelve True solo si la cola está saturada."""
         return self.cola.qsize() >= self.max_cola
 
-    # [DB] firma extendida: ahora recibe evento_id y alerta_id para poder
-    #      persistir el análisis y vincularlo a la alerta cuando LLaVA termine.
-    def analizar(self, frame, alerta_num, zona, evento_id=None, alerta_id=None):
+    # [DB] firma extendida: recibe evento_id y alerta_id para persistir el
+    #      análisis y vincularlo a la alerta.
+    # [REDIS] camara_nombre se usa para setear el cooldown/estado post-análisis.
+    def analizar(self, frame, alerta_num, zona, evento_id=None, alerta_id=None,
+                 camara_nombre=None):
         """
         [COLA] Encola el trabajo. Si la cola está llena, descarta con aviso.
                El worker corre en un único thread, así que LLaVA nunca procesa
@@ -345,6 +454,7 @@ class AnalizadorAsync:
             "zona": zona,
             "evento_id": evento_id,
             "alerta_id": alerta_id,
+            "camara_nombre": camara_nombre,
         }
         try:
             self.cola.put_nowait(trabajo)
@@ -420,6 +530,10 @@ while True:
             results = model.track(frame, persist=True, imgsz=640, verbose=False, conf=CONFIANZA_VISUAL, classes=[0])
             latencia_yolo_ms = int((time.time() - inicio_yolo) * 1000)  # [DB]
 
+            # [SALUD] stats compartidos para el heartbeat de YOLO
+            _salud_stats["latencia_yolo_ms"] = latencia_yolo_ms
+            _salud_stats["frames_procesados"] += 1
+
             if len(results) > 0 and results[0].boxes is not None:
                 annotated_frame = results[0].plot(line_width=3, font_size=1.2)
                 cam["ultimo_frame"] = annotated_frame.copy()
@@ -469,6 +583,8 @@ while True:
                         if track_id not in cam["personas"]:
                             cam["personas"][track_id] = 0
                             alertas_totales += 1
+                            _salud_stats["alertas_totales"] = alertas_totales  # [SALUD]
+                            _salud_stats["frames_con_personas"] += 1            # [SALUD]
                             print(f"\n[ALERTA #{alertas_totales} | {cam['nombre']}] Persona ID: {track_id} | Certeza: {conf:.0%}")
 
                             cam["alerta"] = True
@@ -526,14 +642,41 @@ while True:
                                 alerta_principal_id = alerta_db_id
 
                 # [DB] --- ANÁLISIS PROFUNDO: ahora controlado por modo_analisis (no por nombre) ---
+                #      Antes era: if cam["nombre"] == "Camara_Sonoff"
+                # [COLA] Ya no hace falta chequear si LLaVA está ocupado:
+                #        analizador.analizar() encola y el worker consume 1 a 1.
+                # [REDIS] Cooldown inteligente: si la escena NO cambió (mismas
+                #         personas visibles) y hay cooldown activo, salteamos
+                #         LLaVA. Si Redis está caído, get/cooldown devuelven
+                #         None/False y el sistema vuelve al comportamiento viejo.
                 if nuevas_personas and cam["modo_analisis"] == "yolo_llava":
-                    analizador.analizar(
-                        frame.copy(),
-                        alertas_totales,
-                        zona=cam["contexto_zona"],
-                        evento_id=evento_id,              # [DB]
-                        alerta_id=alerta_principal_id,    # [DB]
-                    )
+                    personas_visibles = len(ids_detectados)
+                    estado_prev = cache.get_estado_camara(cam["nombre"])
+
+                    saltar_llava = False
+                    if (cache.cooldown_activo(cam["nombre"], "analisis")
+                            and estado_prev
+                            and estado_prev.get("personas") == personas_visibles):
+                        restante = cache.cooldown_restante_s(cam["nombre"], "analisis")
+                        nivel_prev = estado_prev.get("nivel", "?")
+                        print(f"[REDIS] Skip LLaVA en {cam['nombre']} "
+                              f"(cooldown {restante}s, último nivel={nivel_prev}, "
+                              f"{personas_visibles} persona(s))")
+                        saltar_llava = True
+
+                    if not saltar_llava:
+                        # Cooldown "in-flight" para evitar pile-up mientras
+                        # LLaVA está corriendo (~76-135s). El _procesar() lo
+                        # sobreescribe con un TTL más fino cuando termina.
+                        cache.set_cooldown(cam["nombre"], "analisis", ttl_s=90)
+                        analizador.analizar(
+                            frame.copy(),
+                            alertas_totales,
+                            zona=cam["contexto_zona"],
+                            evento_id=evento_id,              # [DB]
+                            alerta_id=alerta_principal_id,    # [DB]
+                            camara_nombre=cam["nombre"],      # [REDIS]
+                        )
 
             # Limpieza de IDs de personas que ya no están en la imagen
             for tid in list(cam["personas"].keys()):
@@ -577,11 +720,12 @@ while True:
 
 print("Cerrando sistema y conexiones...")
 for cam in camaras:
-   
+    # [FIX] Solo cerramos el stream si lo habíamos abierto (lazy-start)
     if cam["vs"] is not None:
         cam["vs"].stop()
     # [DB] Marcamos cada cámara como offline al salir
     if cam["id_db"]:
         db.actualizar_salud_camara(cam["id_db"], estado="offline")
 cv2.destroyAllWindows()
+cache.cerrar()  # [REDIS] cerramos conexión a Memurai/Redis
 db.cerrar()  # [DB] cerramos el pool de conexiones limpiamente

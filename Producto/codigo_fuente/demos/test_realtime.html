@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cámaras-IA · Test SSE Realtime</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --blue: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--muted);
+      transition: background 200ms;
+    }
+    .dot.connected  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .dot.error      { background: var(--red); }
+    .dot.connecting { background: var(--yellow); animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.4; } }
+
+    main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      align-items: center;
+    }
+    button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { border-color: var(--blue); }
+    .counter {
+      margin-left: auto;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .counter strong { color: var(--text); }
+
+    .alertas {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .alerta {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--muted);
+      border-radius: 6px;
+      padding: 14px 16px;
+      animation: slideIn 300ms ease-out;
+    }
+    .alerta.alto    { border-left-color: var(--red); }
+    .alerta.medio   { border-left-color: var(--yellow); }
+    .alerta.bajo    { border-left-color: var(--green); }
+    .alerta.hello   { border-left-color: var(--blue); }
+    .alerta.error   { border-left-color: var(--red); background: #2a0e0e; }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .alerta-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+    .alerta-titulo { font-weight: 600; font-size: 15px; }
+    .alerta-time { font-size: 12px; color: var(--muted); }
+    .alerta-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }
+    .alerta-meta strong { color: var(--text); }
+    .alerta-desc { font-size: 14px; line-height: 1.45; margin-top: 6px; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge.alto  { background: #4a1010; color: var(--red); }
+    .badge.medio { background: #3a2a08; color: var(--yellow); }
+    .badge.bajo  { background: #0e2a14; color: var(--green); }
+    .badge.sospechoso { background: #4a1010; color: var(--red); margin-left: 6px; }
+
+    .empty {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cámaras-IA · Test Realtime SSE</h1>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="status-text">Desconectado</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="controls">
+      <button id="btn-connect">Conectar</button>
+      <button id="btn-disconnect">Desconectar</button>
+      <button id="btn-clear">Limpiar</button>
+      <div class="counter">Recibidas: <strong id="count">0</strong></div>
+    </div>
+
+    <div class="alertas" id="alertas">
+      <div class="empty" id="empty">
+        Esperando alertas... Apretá <strong>Conectar</strong> para empezar a escuchar.
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const API_URL = "http://localhost:8000/alertas/stream";
+
+    const dot         = document.getElementById("dot");
+    const statusText  = document.getElementById("status-text");
+    const btnConnect  = document.getElementById("btn-connect");
+    const btnDisc     = document.getElementById("btn-disconnect");
+    const btnClear    = document.getElementById("btn-clear");
+    const alertasEl   = document.getElementById("alertas");
+    const emptyEl     = document.getElementById("empty");
+    const countEl     = document.getElementById("count");
+
+    let es = null;
+    let count = 0;
+
+    function setStatus(state, text) {
+      dot.className = "dot " + state;
+      statusText.textContent = text;
+    }
+
+    function fmtTime(ts) {
+      const d = ts ? new Date(ts * 1000) : new Date();
+      return d.toLocaleTimeString("es-AR");
+    }
+
+    function addAlerta(data, kind) {
+      if (emptyEl) emptyEl.remove();
+      count++;
+      countEl.textContent = count;
+
+      const div = document.createElement("div");
+      div.className = "alerta " + (kind || data.nivel || "bajo");
+
+      if (kind === "hello") {
+        div.innerHTML = `
+          <div class="alerta-head">
+            <div class="alerta-titulo">Stream conectado</div>
+            <div class="alerta-time">${fmtTime(data.ts)}</div>
+          </div>
+          <div class="alerta-desc">${data.msg} (canal: ${data.canal})</div>
+        `;
+      } else if (kind === "error") {
+        div.innerHTML = `
+          <div class="alerta-head">
+            <div class="alerta-titulo">Error en stream</div>
+            <div class="alerta-time">${fmtTime()}</div>
+          </div>
+          <div class="alerta-desc">${data.msg}</div>
+        `;
+      } else {
+        const sospBadge = data.sospechoso
+          ? `<span class="badge sospechoso">Sospechoso</span>`
+          : "";
+        div.innerHTML = `
+          <div class="alerta-head">
+            <div class="alerta-titulo">
+              #${data.alerta_num ?? "?"} · ${data.camara ?? "?"}
+              <span class="badge ${data.nivel}">${data.nivel}</span>
+              ${sospBadge}
+            </div>
+            <div class="alerta-time">${fmtTime(data.ts)}</div>
+          </div>
+          <div class="alerta-meta">
+            <span>Zona: <strong>${data.zona ?? "—"}</strong></span>
+            <span>Personas: <strong>${data.personas ?? 0}</strong></span>
+            <span>Evento: <strong>${data.evento_id ?? "—"}</strong></span>
+          </div>
+          <div class="alerta-desc">${data.descripcion ?? "(sin descripción)"}</div>
+          ${data.acciones ? `<div class="alerta-desc"><em>Acciones:</em> ${data.acciones}</div>` : ""}
+        `;
+      }
+
+      // insertamos al principio (más reciente arriba)
+      alertasEl.insertBefore(div, alertasEl.firstChild);
+    }
+
+    function connect() {
+      if (es) es.close();
+      setStatus("connecting", "Conectando...");
+
+      es = new EventSource(API_URL);
+
+      es.addEventListener("hello", (e) => {
+        setStatus("connected", "Conectado");
+        try { addAlerta(JSON.parse(e.data), "hello"); }
+        catch { console.error("hello payload inválido", e.data); }
+      });
+
+      es.addEventListener("alerta", (e) => {
+        try { addAlerta(JSON.parse(e.data)); }
+        catch (err) { console.error("alerta payload inválido", e.data, err); }
+      });
+
+      es.addEventListener("error", (e) => {
+        if (es.readyState === EventSource.CLOSED) {
+          setStatus("error", "Conexión cerrada");
+        } else {
+          setStatus("error", "Error (reintentando...)");
+        }
+        // Si el server mandó un evento "error" con payload, lo mostramos
+        if (e.data) {
+          try { addAlerta(JSON.parse(e.data), "error"); } catch {}
+        }
+      });
+    }
+
+    function disconnect() {
+      if (es) { es.close(); es = null; }
+      setStatus("", "Desconectado");
+    }
+
+    function clearAll() {
+      alertasEl.innerHTML = '<div class="empty" id="empty">Esperando alertas...</div>';
+      // Re-bind reference
+      window.emptyEl = document.getElementById("empty");
+      count = 0;
+      countEl.textContent = "0";
+    }
+
+    btnConnect.addEventListener("click", connect);
+    btnDisc.addEventListener("click", disconnect);
+    btnClear.addEventListener("click", clearAll);
+
+    // Auto-connect al cargar
+    connect();
+  </script>
+</body>
+</html>

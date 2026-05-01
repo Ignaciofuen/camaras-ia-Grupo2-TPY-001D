@@ -1,3 +1,12 @@
+# --- path setup: permite importar modulos hermanos (base_datos/, backend/, telegram/) ---
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+for _sub in ("base_datos", "backend", "telegram"):
+    _p = _os.path.join(_ROOT, _sub)
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+# --- end path setup ---
+
 from analizador import analizar_frame
 import cv2
 import os
