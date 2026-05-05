@@ -35,3 +35,14 @@ Clona el repositorio y ejecuta **uno** de los siguientes comandos según tu gest
 ```powershell
 npm install
 npm install prop-types
+
+**Usando pnpm:**
+```powershell
+pnpm install
+pnpm add prop-types
+
+**Usando Yarn:**
+```powershell
+yarn install
+yarn add prop-types
+
