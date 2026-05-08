@@ -1,64 +1,96 @@
 import { useState, useEffect, useCallback } from 'react';
+import api from '../services/api';
 
 /**
  * useCameras
- * Hook personalizado para obtener y gestionar la lista de cámaras desde el backend.
- * * @param {string} baseUrl - URL base de la API (opcional, por si usas variables de entorno)
- * @returns {Object} { cameras, loading, error, refetch }
+ *
+ * Este hook se encarga de traer las cámaras desde el backend.
+ *
+ * Maneja dos tipos de carga:
+ * - loading: carga inicial (pantalla completa)
+ * - isRefetching: actualización en segundo plano (no rompe la UI)
  */
-export const useCameras = (baseUrl = '') => {
+export const useCameras = () => {
   const [cameras, setCameras] = useState([]);
+
+  // loading principal (cuando la vista recién carga)
   const [loading, setLoading] = useState(true);
+
+  // loading en segundo plano (para refresh sin bloquear UI)
+  const [isRefetching, setIsRefetching] = useState(false);
+
   const [error, setError] = useState(null);
 
-  const fetchCameras = useCallback(async (abortSignal) => {
+  /**
+   * Función base para traer cámaras
+   *
+   * isBackground:
+   * - false → carga inicial
+   * - true → actualización silenciosa
+   */
+  const fetchCameras = useCallback(async (signal, isBackground = false) => {
     try {
-      setLoading(true);
-      setError(null);
-
-      // Petición real al endpoint
-      const response = await fetch(`${baseUrl}/cameras`, {
-        signal: abortSignal,
-        headers: {
-          'Accept': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
+      if (isBackground) {
+        setIsRefetching(true);
+      } else {
+        setLoading(true);
       }
 
-      const data = await response.json();
-      
-      // Asegurar que guardamos un array (defensivo ante respuestas malformadas del backend)
+      setError(null);
+
+      // llamada real al backend
+      const response = await api.get('/cameras', { signal });
+      const data = response.data;
+
+      // defensivo: aseguramos que siempre sea array
       setCameras(Array.isArray(data) ? data : []);
 
     } catch (err) {
-      // Ignorar errores generados intencionalmente por el AbortController
-      if (err.name === 'AbortError') return;
-      
-      setError(err.message || 'Error desconocido al conectar con el servidor');
-      setCameras([]); // Limpiar estado previo en caso de error crítico
+      // axios usa CanceledError cuando abortas
+      if (err.name === 'CanceledError') return;
+
+      setError(err.message || 'Error al obtener cámaras');
+
+      // si falla la carga inicial, limpiamos
+      // si falla el refetch, mantenemos lo que ya había
+      if (!isBackground) {
+        setCameras([]);
+      }
+
     } finally {
-      setLoading(false);
+      if (isBackground) {
+        setIsRefetching(false);
+      } else {
+        setLoading(false);
+      }
     }
-  }, [baseUrl]);
+  }, []);
 
+  /**
+   * Carga inicial (cuando entra a la vista)
+   */
   useEffect(() => {
-    const abortController = new AbortController();
-    
-    fetchCameras(abortController.signal);
+    const controller = new AbortController();
 
-    // Cleanup: Cancela la petición HTTP si el componente se desmonta antes de recibir respuesta
-    return () => {
-      abortController.abort();
-    };
+    fetchCameras(controller.signal, false);
+
+    return () => controller.abort();
   }, [fetchCameras]);
 
-  // Exponer una función para recargar la lista manualmente (útil para botones de "Actualizar" en la UI)
-  const refetch = () => {
-    fetchCameras();
-  };
+  /**
+   * Refetch manual (no rompe la UI)
+   * útil para botón "Actualizar" o auto-refresh
+   */
+  const refetch = useCallback(() => {
+    const controller = new AbortController();
+    fetchCameras(controller.signal, true);
+  }, [fetchCameras]);
 
-  return { cameras, loading, error, refetch };
+  return {
+    cameras,
+    loading,
+    isRefetching,
+    error,
+    refetch,
+  };
 };
