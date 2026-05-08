@@ -1,23 +1,38 @@
 /**
  * WebSocketService
- * Envoltorio (wrapper) para la API nativa de WebSocket.
- * Maneja la instanciación y el enrutamiento de eventos.
+ *
+ * Wrapper simple para manejar WebSocket sin ensuciar los hooks.
+ * Aquí se controla:
+ * - conexión
+ * - eventos
+ * - reconexión automática
  */
 export class WebSocketService {
   constructor() {
     this.ws = null;
     this.url = null;
+    this.callbacks = {};
+    
+    // control de reconexión
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 3000;
+
+    this.reconnectTimer = null;
+
+    // sirve para no reconectar cuando cerramos manualmente
+    this.intentionalDisconnect = false; 
   }
 
   /**
-   * Inicia la conexión WebSocket
-   * @param {string} url - URL del servidor (ej. ws://localhost:8000/ws)
-   * @param {Object} callbacks - Funciones manejadoras de eventos
+   * conecta al servidor WS
    */
   connect(url, callbacks = {}) {
     this.url = url;
-    
-    // Cierre preventivo si ya existía una conexión activa en esta instancia
+    this.callbacks = callbacks;
+    this.intentionalDisconnect = false;
+
+    // si ya había conexión, la cerramos primero
     if (this.ws) {
       this.ws.close();
     }
@@ -26,39 +41,71 @@ export class WebSocketService {
       this.ws = new WebSocket(url);
 
       this.ws.onopen = (event) => {
-        if (callbacks.onOpen) callbacks.onOpen(event);
+        this.reconnectAttempts = 0;
+        if (this.callbacks.onOpen) this.callbacks.onOpen(event);
       };
 
       this.ws.onmessage = (event) => {
-        if (callbacks.onMessage) {
+        if (this.callbacks.onMessage) {
           try {
-            // Intentamos parsear a JSON por defecto (útil para YOLO/FastAPI)
+            // intentamos parsear JSON automáticamente
             const data = JSON.parse(event.data);
-            callbacks.onMessage(data, event);
-          } catch (e) {
-            // Fallback si es un mensaje de texto simple
-            callbacks.onMessage(event.data, event);
+            this.callbacks.onMessage(data, event);
+          } catch {
+            // si no es JSON, lo pasamos tal cual
+            this.callbacks.onMessage(event.data, event);
           }
         }
       };
 
       this.ws.onerror = (event) => {
-        if (callbacks.onError) callbacks.onError(event);
+        if (this.callbacks.onError) this.callbacks.onError(event);
       };
 
       this.ws.onclose = (event) => {
-        if (callbacks.onClose) callbacks.onClose(event);
+        if (this.callbacks.onClose) this.callbacks.onClose(event);
+        this.handleReconnect();
       };
 
     } catch (error) {
-      if (callbacks.onError) callbacks.onError(error);
+      if (this.callbacks.onError) this.callbacks.onError(error);
+      this.handleReconnect();
     }
   }
 
   /**
-   * Cierra la conexión de forma limpia
+   * lógica simple de reconexión
+   */
+  handleReconnect() {
+    // si se cerró manualmente, no reconectar
+    if (this.intentionalDisconnect) return;
+
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+
+      console.warn(
+        `[WebSocket] reconectando... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+      );
+
+      this.reconnectTimer = setTimeout(() => {
+        this.connect(this.url, this.callbacks);
+      }, this.reconnectDelay);
+
+    } else {
+      console.error('[WebSocket] no se pudo reconectar');
+    }
+  }
+
+  /**
+   * cierre manual (cuando React desmonta)
    */
   disconnect() {
+    this.intentionalDisconnect = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -66,15 +113,16 @@ export class WebSocketService {
   }
 
   /**
-   * Envía datos al servidor
-   * @param {Object|string} data - Payload a enviar
+   * enviar datos al servidor
    */
   send(data) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      const payload = typeof data === 'string' ? data : JSON.stringify(data);
+      const payload =
+        typeof data === 'string' ? data : JSON.stringify(data);
+
       this.ws.send(payload);
     } else {
-      console.warn('[WebSocketService] Intento de envío sin conexión activa.');
+      console.warn('[WebSocketService] sin conexión activa');
     }
   }
 }
