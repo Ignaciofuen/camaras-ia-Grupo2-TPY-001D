@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Navbar from './Navbar';
+import SystemStatus from '../system/SystemStatus';
 
 /**
  * MainLayout
@@ -34,11 +35,11 @@ const MainLayout = () => {
         {/* Footer Opcional (Barra de estado del sistema/CPU/Red) */}
         <footer className="h-6 bg-[#1a1a1a] border-t border-gray-800 flex items-center px-3 justify-between">
           <div className="flex items-center gap-4 text-[10px] uppercase tracking-tighter text-gray-500">
-            <span>System Status: <span className="text-green-500">Optimal</span></span>
-            <span>Latency: <span className="text-blue-400">24ms</span></span>
+            <span>System Status: <span className="text-green-500">{systemStatus}</span></span>
+            <span>Latency: <span className="text-blue-400">{latency}</span></span>
           </div>
           <div className="text-[10px] text-gray-600 font-mono">
-            VMS CORE v1.0.4-PROD
+            VMS VIGILANCIA ACTIVA v1.0.4-PROD
           </div>
         </footer>
       </div>
