@@ -2,37 +2,38 @@ import { create } from 'zustand';
 
 /**
  * useAlerts
- * Store global para la gestión del estado de alertas de seguridad.
- * Diseñado para ser actualizado por servicios de WebSocket externos.
+ *
+ * Store global para manejar alertas en toda la app.
+ * Se actualiza desde WebSocket u otros servicios externos.
  */
 export const useAlerts = create((set) => ({
-  // Estado inicial
+  // Estado
   alerts: [],
   selectedAlert: null,
 
   /**
-   * Agrega una nueva alerta a la lista global.
-   * Mantiene un límite de 100 elementos para optimizar el rendimiento del DOM 
-   * y el consumo de memoria en sesiones de monitoreo prolongadas.
-   * @param {Object} alert - Objeto de alerta proveniente del WebSocket o API.
+   * Agrega una nueva alerta al inicio.
+   * Se limita a 100 para evitar problemas de rendimiento.
    */
-  addAlert: (alert) => set((state) => ({
-    alerts: [alert, ...state.alerts].slice(0, 100)
-  })),
+  addAlert: (alert) =>
+    set((state) => ({
+      alerts: [alert, ...state.alerts].slice(0, 100),
+    })),
 
   /**
-   * Establece una alerta específica como seleccionada para su inspección detallada.
-   * @param {Object} alert - El objeto de alerta seleccionado.
+   * Selecciona una alerta para ver su detalle.
    */
-  selectAlert: (alert) => set({
-    selectedAlert: alert
-  }),
+  selectAlert: (alert) =>
+    set({
+      selectedAlert: alert,
+    }),
 
   /**
-   * Reinicia el estado de alertas y limpia la selección actual.
+   * Limpia todas las alertas y la selección.
    */
-  clearAlerts: () => set({
-    alerts: [],
-    selectedAlert: null
-  })
+  clearAlerts: () =>
+    set({
+      alerts: [],
+      selectedAlert: null,
+    }),
 }));
