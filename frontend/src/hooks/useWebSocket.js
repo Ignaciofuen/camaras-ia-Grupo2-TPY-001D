@@ -1,70 +1,77 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { WebSocketService } from '../services/websocket';
 
 /**
  * useWebSocket
- * Hook personalizado para manejar el estado y ciclo de vida de la conexión WS.
- * * @param {string} url - URL del servidor WebSocket
- * @param {Function} onMessage - Callback ejecutado al recibir datos
- * @returns {Object} { status, send } - Estado de la conexión y función de envío
+ *
+ * Hook encargado de:
+ * - abrir conexión WS
+ * - recibir detecciones
+ * - mantener estado local
  */
-export const useWebSocket = (url, onMessage) => {
-  // Estados posibles: 'disconnected' | 'connecting' | 'connected' | 'error'
+export const useWebSocket = () => {
   const [status, setStatus] = useState('disconnected');
-  
-  // Refs para evitar problemas de dependencias y conexiones duplicadas
+  const [detectionsMap, setDetectionsMap] = useState({});
+
   const wsRef = useRef(null);
-  const onMessageRef = useRef(onMessage);
-
-  // Mantenemos la referencia del callback actualizada sin disparar re-renders
-  useEffect(() => {
-    onMessageRef.current = onMessage;
-  }, [onMessage]);
+  const bufferRef = useRef({});
 
   useEffect(() => {
-    if (!url) return;
+    const wsUrl =
+      import.meta.env.VITE_WS_URL ||
+      'ws://localhost:8080/ws/detections';
 
-    // Prevención estricta de conexiones duplicadas
-    if (wsRef.current) {
-      return;
-    }
+    if (wsRef.current) return;
 
     setStatus('connecting');
+
     const wsService = new WebSocketService();
     wsRef.current = wsService;
 
-    wsService.connect(url, {
-      onOpen: () => {
-        setStatus('connected');
-      },
-      onMessage: (data) => {
-        if (onMessageRef.current) {
-          onMessageRef.current(data);
+    wsService.connect(wsUrl, {
+      onOpen: () => setStatus('connected'),
+
+      onMessage: (message) => {
+        try {
+          const data =
+            typeof message === 'string'
+              ? JSON.parse(message)
+              : message;
+
+          if (!data.cameraId) return;
+
+          bufferRef.current[data.cameraId] =
+            data.boxes || data.detections || [];
+        } catch (error) {
+          console.error('Error parseando WebSocket:', error);
         }
       },
-      onError: () => {
-        setStatus('error');
-      },
-      onClose: () => {
-        setStatus('disconnected');
-      }
+
+      onError: () => setStatus('error'),
+
+      onClose: () => setStatus('disconnected'),
     });
 
-    // Cleanup: Se ejecuta al desmontar el componente o si la URL cambia
+    /*
+     * Actualización controlada del estado
+     * para evitar demasiados renders.
+     */
+    const interval = setInterval(() => {
+      setDetectionsMap({ ...bufferRef.current });
+    }, 100);
+
     return () => {
+      clearInterval(interval);
+
       if (wsRef.current) {
         wsRef.current.disconnect();
         wsRef.current = null;
       }
     };
-  }, [url]);
+  }, []);
 
-  // Exponemos el método send para que los componentes puedan hablar con el servidor
-  const send = (data) => {
-    if (wsRef.current) {
-      wsRef.current.send(data);
-    }
+  return {
+    status,
+    detectionsMap,
   };
-
-  return { status, send };
 };
