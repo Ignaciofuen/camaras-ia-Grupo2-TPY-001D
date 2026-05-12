@@ -105,14 +105,27 @@ class Storage:
                 region_name=MINIO_REGION,
             )
 
-            # Crear bucket si no existe
+            # Crear bucket si no existe.
+            # MinIO devuelve 404 / NoSuchBucket cuando el bucket no existe,
+            # PERO algunas versiones (especialmente cuando hay policies) devuelven
+            # 403 Forbidden / AccessDenied. En ese caso, intentamos crearlo igual
+            # y si ya existia, el create_bucket tira BucketAlreadyOwnedByYou que
+            # capturamos como exito.
             try:
                 self._client.head_bucket(Bucket=MINIO_BUCKET)
             except ClientError as e:
                 code = e.response.get("Error", {}).get("Code", "")
-                if code in ("404", "NoSuchBucket", "NotFound"):
-                    self._client.create_bucket(Bucket=MINIO_BUCKET)
-                    log.info(f"[storage] Bucket creado: {MINIO_BUCKET}")
+                http_status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                if code in ("404", "NoSuchBucket", "NotFound") or http_status in (403, 404):
+                    try:
+                        self._client.create_bucket(Bucket=MINIO_BUCKET)
+                        log.info(f"[storage] Bucket creado: {MINIO_BUCKET}")
+                    except ClientError as ce:
+                        cc = ce.response.get("Error", {}).get("Code", "")
+                        if cc in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                            log.info(f"[storage] Bucket ya existia: {MINIO_BUCKET}")
+                        else:
+                            raise
                 else:
                     raise
 
