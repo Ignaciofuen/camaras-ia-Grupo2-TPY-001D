@@ -71,7 +71,8 @@ ESTADO_CAMARA_TTL_S = int(os.getenv("CAMARAS_ESTADO_TTL_S", "300"))
 # Prefijos de keys — convenio 'namespace:entidad:id'
 PFX_COOLDOWN = "cd"        # cd:<camara>:<tipo>
 PFX_ESTADO   = "estado"    # estado:<camara>
-CHANNEL_ALERTAS = "alertas"   # canal pub/sub
+CHANNEL_ALERTAS     = "alertas"      # canal pub/sub - evento "alta" (resultado LLaVA)
+CHANNEL_DETECCIONES = "detecciones"  # canal pub/sub - bboxes YOLO frame-por-frame
 
 
 # -----------------------------------------------------------------------------
@@ -230,6 +231,36 @@ class Cache:
         """Publica en canal 'alertas'. Devuelve nro de subscribers que recibieron."""
         return int(self._client.publish(CHANNEL_ALERTAS, json.dumps(payload)))
 
+    # Throttle interno por cámara para detecciones (no saturar Redis)
+    _last_pub_detecciones: dict = {}
+    DETECCIONES_MIN_INTERVAL_S = 0.2  # max 5 fps por camara
+
+    @_safe(default=0)
+    def publish_detecciones(self, camara: str, boxes: list, force: bool = False) -> int:
+        """
+        Publica las bboxes de YOLO al canal 'detecciones' (frame-por-frame).
+        Throttle: max 5 mensajes/seg por camara salvo que force=True.
+
+        Estructura del payload:
+          {
+            "camara": "Camara_Sonoff",
+            "ts": 1717..,
+            "boxes": [
+              {"id": 2, "label": "person", "conf": 0.87,
+               "x": 0.12, "y": 0.34, "w": 0.20, "h": 0.55}   # normalizadas 0..1
+            ]
+          }
+        """
+        if not self.habilitado or self._client is None:
+            return 0
+        now = time.time()
+        last = self._last_pub_detecciones.get(camara, 0)
+        if not force and (now - last) < self.DETECCIONES_MIN_INTERVAL_S:
+            return 0  # throttled, no publicar
+        self._last_pub_detecciones[camara] = now
+        payload = {"camara": camara, "ts": now, "boxes": boxes}
+        return int(self._client.publish(CHANNEL_DETECCIONES, json.dumps(payload)))
+
     def subscribe_alertas(self):
         """
         Devuelve un PubSub listo para consumir.
@@ -333,7 +364,15 @@ if __name__ == "__main__":
     n = cache.publish_alerta({"camara": cam, "nivel": "alto", "test": True})
     print(f"  subscribers que recibieron: {n}")
 
+    # Test 4: pub/sub canal detecciones (bboxes YOLO)
+    print("\n[Test 4] Publish a canal 'detecciones'")
+    n = cache.publish_detecciones(cam, [
+        {"id": 1, "label": "person", "conf": 0.92, "x": 0.1, "y": 0.1, "w": 0.3, "h": 0.5},
+    ], force=True)
+    print(f"  subscribers que recibieron: {n}")
+
     # Limpieza
     cache.flush_cooldowns()
     print("\nLimpieza OK — cooldowns borrados.")
     cache.cerrar()
+    _db.cerrar()

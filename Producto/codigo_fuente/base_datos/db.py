@@ -189,7 +189,8 @@ class DB:
                        usuario_rtsp, puerto_rtsp, ruta_rtsp,
                        modo_analisis, confianza_visual, confianza_alerta,
                        procesar_cada_n_frames, duracion_alerta_seg, frames_ausencia,
-                       contexto_zona, activa
+                       contexto_zona, activa,
+                       mediamtx_path  -- [MEDIAMTX] habilita modo proxy en detector.py
                 FROM camaras
                 WHERE activa = TRUE
                 ORDER BY nombre

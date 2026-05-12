@@ -171,6 +171,10 @@ def _cargar_camaras():
                 "ip_respaldo":    c["ip_respaldo"],
                 "modo_analisis":  c["modo_analisis"],     # solo_yolo | yolo_llava | solo_llava
                 "contexto_zona":  c["contexto_zona"] or c["nombre"],
+                # [MEDIAMTX] Si esta poblado, el detector consume desde MediaMTX
+                # en lugar de la camara directa. Evita conflictos de "1 conexion
+                # RTSP simultanea" que tienen las camaras IP baratas.
+                "mediamtx_path":  c.get("mediamtx_path"),
             })
     if not fuente:
         print("[DB] Usando configuración hardcoded de fallback")
@@ -186,6 +190,7 @@ def _cargar_camaras():
                 "ip_respaldo":    c["ip_respaldo"],
                 "modo_analisis":  c["modo_analisis"],
                 "contexto_zona":  c["nombre"],
+                "mediamtx_path":  c.get("mediamtx_path"),  # opcional en fallback
             })
     return fuente
 
@@ -246,6 +251,32 @@ despertar_red(BASE_IP)
 
 print("\nBuscando cámaras en la red...")
 for cam in CONFIGURACION_CAMARAS:
+    # [MEDIAMTX] Si la cámara tiene mediamtx_path configurado, consumimos
+    # el stream desde MediaMTX en vez de hablarle directo a la cámara IP.
+    # Esto evita el conflicto típico de "1 sola conexión RTSP simultánea"
+    # que tienen las cámaras IP chinas baratas. MediaMTX se queda con
+    # la única conexión a la cámara y todos los demás (detector, frontend
+    # vía HLS, etc.) consumen desde MediaMTX.
+    if cam.get("mediamtx_path"):
+        mtx_path = cam["mediamtx_path"]
+        # [SYNC] Si la camara usa un transcode FFmpeg (cam_*_lite), el detector
+        # consume el path BASE (sin _lite). Razon: el FFmpeg agrega ~500ms de
+        # delay que desincroniza el bbox del video. El detector lee el frame
+        # raw "antes" que llegue al cliente -> bbox aparece en sync con video.
+        # El frontend sigue consumiendo el _lite (720p, menos CPU del browser).
+        if mtx_path.endswith("_lite"):
+            base_path = mtx_path[:-len("_lite")]
+            url = f"rtsp://localhost:8554/{base_path}"
+            print(f"[MEDIAMTX] {cam['nombre']} consume PATH BASE para sync: {url}")
+        else:
+            url = f"rtsp://localhost:8554/{mtx_path}"
+            print(f"[MEDIAMTX] {cam['nombre']} consume desde MediaMTX: {url}")
+        enlaces_rtsp[cam["nombre"]] = url
+        if cam["id_db"]:
+            db.actualizar_salud_camara(cam["id_db"], estado="online")
+        continue
+
+    # Modo legacy: conexión RTSP directa a la cámara IP (con descubrimiento ARP)
     ip = obtener_ip_camara(cam["mac"])
     if ip:
         print(f"[✅] {cam['nombre']} encontrada en IP: {ip}")
@@ -276,6 +307,13 @@ CONFIANZA_ALERTA        = float(db.config("CONFIANZA_ALERTA", 0.67))           #
 PROCESAR_CADA_N_FRAMES  = int(db.config("PROCESAR_CADA_N_FRAMES", 2))          # [DB]
 DURACION_ALERTA_SEG     = int(db.config("DURACION_ALERTA_SEG", 5))             # [DB]
 FRAMES_AUSENCIA         = int(db.config("FRAMES_AUSENCIA", 92))                # [DB]
+
+# Cooldown global por camara para CREACION de alertas (evita spam cuando una
+# misma persona aparece y desaparece, o cuando YOLO le asigna un track_id
+# nuevo). Default 30s. Sobrescribir con CAMARAS_ALERT_COOLDOWN_S en .env.
+ALERT_COOLDOWN_S = int(os.getenv("CAMARAS_ALERT_COOLDOWN_S",
+                                 db.config("ALERT_COOLDOWN_S", 30)))
+print(f"[COOLDOWN] ALERT_COOLDOWN_S = {ALERT_COOLDOWN_S}s (cooldown global por camara para creacion de alerta)")
 
 class VideoStream:
     def __init__(self, src):
@@ -581,11 +619,29 @@ while True:
                             print(f"[DB] No pude extraer bbox: {e}")
 
                         if track_id not in cam["personas"]:
+                            # [REDIS] Cooldown global de CREACION de alerta por
+                            # camara. Evita spam cuando una persona aparece y
+                            # desaparece varias veces, o cuando YOLO le asigna
+                            # un track_id nuevo a la misma persona. El track se
+                            # sigue registrando en cam["personas"] para no
+                            # romper la logica de FRAMES_AUSENCIA.
+                            if cache.cooldown_activo(cam["nombre"], "alerta_db"):
+                                # [DEBUG COOLDOWN] log temporal para verificar que dispara
+                                restante = cache.cooldown_restante_s(cam["nombre"], "alerta_db")
+                                print(f"[COOLDOWN] BLOQUEADO {cam['nombre']} track_id={track_id} restante={restante}s")
+                                cam["personas"][track_id] = 0
+                                continue
+
+                            cache.set_cooldown(cam["nombre"], "alerta_db",
+                                               ttl_s=ALERT_COOLDOWN_S)
+                            print(f"[COOLDOWN] SET {cam['nombre']} ttl={ALERT_COOLDOWN_S}s")
+
                             cam["personas"][track_id] = 0
                             alertas_totales += 1
                             _salud_stats["alertas_totales"] = alertas_totales  # [SALUD]
                             _salud_stats["frames_con_personas"] += 1            # [SALUD]
-                            print(f"\n[ALERTA #{alertas_totales} | {cam['nombre']}] Persona ID: {track_id} | Certeza: {conf:.0%}")
+                            ts_alerta = datetime.now().strftime("%H:%M:%S")
+                            print(f"\n[{ts_alerta}] [ALERTA #{alertas_totales} | {cam['nombre']}] Persona ID: {track_id} | Certeza: {conf:.0%}")
 
                             cam["alerta"] = True
                             cam["texto"] = f"ALERTA #{alertas_totales}: PERSONA DETECTADA"
@@ -641,6 +697,28 @@ while True:
                             if alerta_principal_id is None:
                                 alerta_principal_id = alerta_db_id
 
+                            # [REDIS PUBSUB] Opcion D: publicamos una alerta
+                            # PROVISIONAL con texto YOLO para que el frontend
+                            # la muestre YA, sin esperar los ~80s de LLaVA.
+                            # Cuando LLaVA termine, _procesar() vuelve a publicar
+                            # con descripcion enriquecida (mismo alerta_num).
+                            try:
+                                cache.publish_alerta({
+                                    "tipo":        "yolo",
+                                    "camara":      cam["nombre"],
+                                    "zona":        cam.get("contexto_zona"),
+                                    "nivel":       "medio",  # provisional
+                                    "personas":    len(todas_detecciones_bbox),
+                                    "descripcion": "Persona detectada (analizando...)",
+                                    "acciones":    "",
+                                    "sospechoso":  False,
+                                    "alerta_num":  numero_alerta,
+                                    "evento_id":   evento_id,
+                                    "ts":          time.time(),
+                                })
+                            except Exception:
+                                pass
+
                 # [DB] --- ANÁLISIS PROFUNDO: ahora controlado por modo_analisis (no por nombre) ---
                 #      Antes era: if cam["nombre"] == "Camara_Sonoff"
                 # [COLA] Ya no hace falta chequear si LLaVA está ocupado:
@@ -678,6 +756,28 @@ while True:
                             camara_nombre=cam["nombre"],      # [REDIS]
                         )
 
+            # [REDIS] Publicar bboxes en realtime al canal "detecciones".
+            # El throttle interno del cache deja max ~5 fps por camara, asi que
+            # podemos llamarlo en cada frame sin saturar a Redis.
+            # Coordenadas ya normalizadas (0..1) para que el frontend escale.
+            try:
+                boxes_publish = [
+                    {
+                        "id":    b["id_rastreo"],
+                        "label": b["clase_nombre"],
+                        "conf":  b["confianza"],
+                        "x":     b["bbox_x"],
+                        "y":     b["bbox_y"],
+                        "w":     b["bbox_w"],
+                        "h":     b["bbox_h"],
+                    }
+                    for b in todas_detecciones_bbox
+                ]
+                cache.publish_detecciones(cam["nombre"], boxes_publish)
+            except Exception as e:
+                # No queremos que un fallo de Redis frene el detector
+                pass
+
             # Limpieza de IDs de personas que ya no están en la imagen
             for tid in list(cam["personas"].keys()):
                 if tid not in ids_detectados:
@@ -709,23 +809,45 @@ while True:
             if cam["nombre"] == "Camara_Principal":
                 cam["activa"] = not cam["activa"]
                 if cam["activa"]:
-                    # [FIX] Lazy-start: abrimos el RTSP solo al prender la cámara
+                    # [FIX] Lazy-start: abrimos el RTSP solo al prender la camara
                     if cam["vs"] is None:
                         print("\n[INFO] Abriendo stream de Camara_Principal...")
                         cam["vs"] = VideoStream(cam["url_rtsp"]).start()
-                    print("\n[INFO] Camara_Principal ENCENDIDA (Modo YOLO Rápido).")
+                    print("\n[INFO] Camara_Principal ENCENDIDA (Modo YOLO Rapido).")
                 else:
                     print("\n[INFO] Camara_Principal APAGADA.")
                     cv2.destroyWindow(f'Sistema de Vigilancia IA - {cam["nombre"]}')
 
-print("Cerrando sistema y conexiones...")
+# =============================================================================
+# CLEANUP AL SALIR
+# =============================================================================
+print("\n[INFO] Cerrando recursos...")
 for cam in camaras:
-    # [FIX] Solo cerramos el stream si lo habíamos abierto (lazy-start)
-    if cam["vs"] is not None:
-        cam["vs"].stop()
-    # [DB] Marcamos cada cámara como offline al salir
-    if cam["id_db"]:
-        db.actualizar_salud_camara(cam["id_db"], estado="offline")
+    if cam.get("vs"):
+        try: cam["vs"].stop()
+        except Exception: pass
+    if cam.get("id_db"):
+        try: db.actualizar_salud_camara(cam["id_db"], estado="offline")
+        except Exception: pass
+
 cv2.destroyAllWindows()
-cache.cerrar()  # [REDIS] cerramos conexión a Memurai/Redis
-db.cerrar()  # [DB] cerramos el pool de conexiones limpiamente
+
+try:
+    if _hb_detector: _hb_detector.stop()
+    if _hb_yolo:     _hb_yolo.stop()
+except Exception:
+    pass
+
+try:
+    reportar_salud("detector", "offline")
+    reportar_salud("yolo",     "offline")
+except Exception:
+    pass
+
+try:
+    cache.cerrar()
+    db.cerrar()
+except Exception:
+    pass
+
+print("[OK] Detector cerrado limpiamente.")

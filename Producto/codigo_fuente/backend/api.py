@@ -59,7 +59,7 @@ from storage import storage
 from redis_cache import (
     cache,
     REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD,
-    CHANNEL_ALERTAS,
+    CHANNEL_ALERTAS, CHANNEL_DETECCIONES,
 )
 from salud import reportar as reportar_salud, Heartbeat
 
@@ -75,6 +75,21 @@ CONFIG_SECRETOS = {
     "AWS_SECRET_KEY",
     "MINIO_SECRET_KEY",
 }
+
+# =============================================================================
+# MediaMTX: base URL para construir las URLs HLS de cada camara.
+# El frontend usa esto directo (sin tener que armar la URL).
+# Se puede sobreescribir con env var MEDIAMTX_HLS_BASE.
+# =============================================================================
+MEDIAMTX_HLS_BASE = _os.getenv("MEDIAMTX_HLS_BASE", "http://localhost:8888").rstrip("/")
+
+
+def _attach_hls_url(row: dict) -> dict:
+    """Si la fila tiene mediamtx_path, agrega hls_url; si no, deja la fila igual."""
+    path = row.get("mediamtx_path") if isinstance(row, dict) else None
+    if path:
+        row["hls_url"] = f"{MEDIAMTX_HLS_BASE}/{path}/index.m3u8"
+    return row
 
 
 # =============================================================================
@@ -294,7 +309,12 @@ def list_camaras(
           {where}
          ORDER BY nombre
     """
-    return _query(sql)
+    rows = _query(sql)
+    if isinstance(rows, list):
+        return [_attach_hls_url(r) for r in rows]
+    if isinstance(rows, dict) and "camaras" in rows:
+        rows["camaras"] = [_attach_hls_url(r) for r in rows["camaras"]]
+    return rows
 
 
 @app.get("/camaras/{camara_id}", tags=["camaras"])
@@ -317,7 +337,7 @@ def get_camara(camara_id: str):
     cam = _query_one(sql, (camara_id,))
     if not cam:
         raise HTTPException(status_code=404, detail="Cámara no encontrada")
-    return cam
+    return _attach_hls_url(cam)
 
 
 # =============================================================================
@@ -329,6 +349,96 @@ def get_camara(camara_id: str):
 # - Si Redis está caído → degradación graciosa: devolvemos 503 / lista vacía.
 # - Si la cámara nunca fue analizada → 404 (no hay estado cacheado).
 # - Ideal para un dashboard que se refresca cada 1-2 segundos.
+
+@app.get("/sistema/metricas", tags=["meta"])
+def sistema_metricas():
+    """
+    Endpoint agregado para el panel "Sistema": junta camaras + servicios +
+    latencias agregadas en una sola llamada. Asi el frontend no hace 4 fetches.
+
+    Devuelve:
+      {
+        uptime_s: ...,
+        servicios: [{componente, estado, latencia_ms, metrica, visto_en, segundos_sin_reporte}],
+        camaras:   [{componente, estado, visto_en, segundos_sin_reporte,
+                     ultima_latencia_yolo_ms, ultimo_evento_en}],
+        totales: { camaras_total, camaras_online, latencia_yolo_ms_avg, latencia_llava_s_avg }
+      }
+    """
+    # 1) Vista v_salud_sistema -> camaras + servicios
+    filas = _query("SELECT * FROM v_salud_sistema ORDER BY tipo, componente")
+    servicios = [f for f in filas if f["tipo"] == "servicio"]
+    camaras   = [f for f in filas if f["tipo"] == "camara"]
+
+    # 2) Para cada camara, ultima latencia YOLO (ultimo evento)
+    cam_extras = _query(
+        """
+        SELECT c.nombre AS componente,
+               MAX(e.capturado_en) AS ultimo_evento_en,
+               (SELECT e2.latencia_yolo_ms
+                  FROM eventos_deteccion e2
+                 WHERE e2.camara_id = c.id
+              ORDER BY e2.capturado_en DESC
+                 LIMIT 1) AS ultima_latencia_yolo_ms
+          FROM camaras c
+     LEFT JOIN eventos_deteccion e ON e.camara_id = c.id
+              AND e.capturado_en > now() - INTERVAL '1 hour'
+         WHERE c.activa
+      GROUP BY c.id, c.nombre
+        """
+    )
+    extras_map = {x["componente"]: x for x in cam_extras}
+    for cam in camaras:
+        ex = extras_map.get(cam["componente"], {})
+        cam["ultima_latencia_yolo_ms"] = ex.get("ultima_latencia_yolo_ms")
+        cam["ultimo_evento_en"]        = ex.get("ultimo_evento_en")
+
+    # 3) Latencia LLaVA promedio (ultimos 10 analisis)
+    llava_row = _query_one(
+        """
+        SELECT AVG(tiempo_analisis_s)::FLOAT AS avg_s,
+               COUNT(*)                       AS n
+          FROM (
+            SELECT tiempo_analisis_s
+              FROM analisis_escena
+             WHERE tiempo_analisis_s IS NOT NULL
+          ORDER BY id DESC
+             LIMIT 10
+          ) t
+        """
+    ) or {}
+    llava_avg_s = llava_row.get("avg_s")
+
+    # 4) Latencia YOLO promedio (ultimos 50 eventos)
+    yolo_row = _query_one(
+        """
+        SELECT AVG(latencia_yolo_ms)::INT AS avg_ms
+          FROM (
+            SELECT latencia_yolo_ms
+              FROM eventos_deteccion
+             WHERE latencia_yolo_ms IS NOT NULL
+          ORDER BY id DESC
+             LIMIT 50
+          ) t
+        """
+    ) or {}
+    yolo_avg_ms = yolo_row.get("avg_ms")
+
+    # 5) Totales
+    camaras_total  = len(camaras)
+    camaras_online = sum(1 for c in camaras if c["estado"] == "online")
+
+    return {
+        "servicios": servicios,
+        "camaras":   camaras,
+        "totales": {
+            "camaras_total":         camaras_total,
+            "camaras_online":        camaras_online,
+            "latencia_yolo_ms_avg":  yolo_avg_ms,
+            "latencia_llava_s_avg":  llava_avg_s,
+        },
+    }
+
 
 @app.get("/estados", tags=["realtime"])
 def list_estados_live():
@@ -479,9 +589,85 @@ def list_alertas(
     return _query(sql, tuple(params))
 
 
-@app.get("/alertas/{alerta_id}", tags=["alertas"])
-def get_alerta(alerta_id: str):
-    """Detalle de una alerta: incluye evento, cámara y análisis LLaVA si existe."""
+@app.delete("/alertas/{alerta_id:int}", tags=["alertas"])
+def delete_alerta(alerta_id: int):
+    """
+    Elimina una alerta por id. El evento_deteccion y el analisis_escena
+    asociados NO se borran (son historial). Solo se borra el registro de
+    `alertas` para que desaparezca del panel.
+    """
+    with db._conn() as conn:
+        # Verificar existe primero (para devolver 404 si no)
+        row = conn.execute(
+            "SELECT id FROM alertas WHERE id = %s", (alerta_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Alerta no encontrada")
+        conn.execute("DELETE FROM alertas WHERE id = %s", (alerta_id,))
+    return {"ok": True, "deleted_id": alerta_id}
+
+
+@app.delete("/alertas", tags=["alertas"])
+def delete_alertas_batch(
+    fecha: Optional[str] = Query(None, description="YYYY-MM-DD: borra todas las alertas de esa fecha"),
+    desde: Optional[str] = Query(None, description="ISO datetime inicio"),
+    hasta: Optional[str] = Query(None, description="ISO datetime fin"),
+    confirmar: bool = Query(False, description="Debe ser true para que se ejecute"),
+):
+    """
+    Borra alertas en batch. Por seguridad requiere ?confirmar=true.
+
+    Opciones:
+      - fecha=YYYY-MM-DD       -> borra todas las alertas de ese dia
+      - desde=...&hasta=...    -> borra alertas en ese rango
+
+    Si no se pasa ninguno, error 400 (no permitimos "borrar todo todo" por
+    accidente).
+    """
+    if not confirmar:
+        raise HTTPException(
+            status_code=400,
+            detail="Falta ?confirmar=true (medida de seguridad)",
+        )
+
+    where_parts = []
+    params: list[Any] = []
+    if fecha:
+        # Borra del 00:00:00 al 23:59:59 del dia
+        where_parts.append("disparada_en >= %s::date AND disparada_en < (%s::date + INTERVAL '1 day')")
+        params.extend([fecha, fecha])
+    elif desde or hasta:
+        if desde:
+            where_parts.append("disparada_en >= %s")
+            params.append(desde)
+        if hasta:
+            where_parts.append("disparada_en <= %s")
+            params.append(hasta)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Especifica ?fecha=YYYY-MM-DD o ?desde=...&hasta=...",
+        )
+
+    where_sql = " AND ".join(where_parts)
+    with db._conn() as conn:
+        result = conn.execute(
+            f"DELETE FROM alertas WHERE {where_sql}",
+            tuple(params),
+        )
+        # En psycopg, rowcount viene en cursor.rowcount; con su wrapper depende.
+        # Hacemos un SELECT COUNT antes en caso de no tener rowcount confiable.
+    return {"ok": True, "filtro": {"fecha": fecha, "desde": desde, "hasta": hasta}}
+
+
+@app.get("/alertas/{alerta_id:int}", tags=["alertas"])
+def get_alerta(alerta_id: int):
+    """Detalle de una alerta: incluye evento, cámara y análisis LLaVA si existe.
+
+    NOTA: el path converter `:int` es CRÍTICO. Sin él, FastAPI matchearía
+    GET /alertas/stream con esta ruta (capturando "stream" como alerta_id)
+    y nunca llegaría al endpoint SSE de la línea ~800.
+    """
     sql = """
         SELECT a.id::text AS id, a.numero_alerta, a.titulo, a.mensaje,
                a.severidad, a.estado, a.disparada_en, a.reconocida_en,
@@ -630,9 +816,9 @@ def list_notificaciones(
 # SNAPSHOTS (MinIO)
 # =============================================================================
 
-@app.get("/alertas/{alerta_id}/snapshot", tags=["snapshots"])
+@app.get("/alertas/{alerta_id:int}/snapshot", tags=["snapshots"])
 def get_alerta_snapshot(
-    alerta_id: str,
+    alerta_id: int,
     modo: str = Query("redirect", description="'redirect' → 302 a presigned URL; 'bytes' → imagen JPG inline"),
     expires: int = Query(3600, ge=60, le=86400, description="Duración URL presignada (segundos)"),
 ):
@@ -797,29 +983,93 @@ async def _stream_alertas(request: Request) -> AsyncGenerator[bytes, None]:
             pass
 
 
+# =============================================================================
+# SSE: stream de DETECCIONES (bboxes YOLO frame-por-frame, ~5fps por camara)
+# Mismo patron que alertas, distinto canal Redis. La estructura del payload:
+#   { "camara": "...", "ts": 17..., "boxes": [{"id","label","conf","x","y","w","h"}] }
+# =============================================================================
+async def _stream_detecciones(request: Request) -> AsyncGenerator[bytes, None]:
+    try:
+        import redis.asyncio as aioredis
+    except ImportError:
+        yield b"event: error\ndata: {\"msg\":\"redis-py no instalado\"}\n\n"
+        return
+
+    client = aioredis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB,
+        password=REDIS_PASSWORD, decode_responses=True,
+        socket_connect_timeout=3,
+    )
+    pubsub = client.pubsub()
+
+    try:
+        await pubsub.subscribe(CHANNEL_DETECCIONES)
+        hello = json.dumps({
+            "msg": "conectado al canal de detecciones",
+            "canal": CHANNEL_DETECCIONES,
+            "ts": time.time(),
+        })
+        yield f"event: hello\ndata: {hello}\n\n".encode("utf-8")
+
+        last_heartbeat = time.time()
+        while True:
+            if await request.is_disconnected():
+                log.info("[sse] Cliente desconectado del stream de detecciones")
+                break
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if msg and msg.get("type") == "message":
+                data = msg.get("data", "")
+                yield f"event: deteccion\ndata: {data}\n\n".encode("utf-8")
+                last_heartbeat = time.time()
+            elif (time.time() - last_heartbeat) > SSE_HEARTBEAT_S:
+                yield b": heartbeat\n\n"
+                last_heartbeat = time.time()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.error(f"[sse] Error en stream detecciones: {e}")
+        err = json.dumps({"msg": str(e)[:200]})
+        yield f"event: error\ndata: {err}\n\n".encode("utf-8")
+    finally:
+        try:
+            await pubsub.unsubscribe(CHANNEL_DETECCIONES)
+            await pubsub.close()
+            await client.close()
+        except Exception:
+            pass
+
+
+@app.get("/detecciones/stream", tags=["realtime"])
+async def detecciones_stream(request: Request):
+    """SSE: empuja bboxes YOLO en tiempo real (~5fps por camara)."""
+    if not cache.habilitado:
+        raise HTTPException(status_code=503, detail="Redis deshabilitado")
+    return StreamingResponse(
+        _stream_detecciones(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "Connection":        "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/alertas/stream", tags=["realtime"])
 async def alertas_stream(request: Request):
-    """
-    Server-Sent Events: empuja cada alerta nueva al cliente en tiempo real.
-
-    Conexión persistente. El cliente recibe:
-      - event: hello   → al conectar
-      - event: alerta  → cada vez que el detector publica
-      - event: error   → si algo falla
-      - comentarios `:` → heartbeats cada 15s (transparente al cliente)
-    """
+    """SSE: empuja cada alerta nueva al cliente en tiempo real."""
     if not cache.habilitado:
         raise HTTPException(
             status_code=503,
-            detail="Redis deshabilitado por configuración (CAMARAS_REDIS_HABILITADO=0)",
+            detail="Redis deshabilitado por configuracion (CAMARAS_REDIS_HABILITADO=0)",
         )
     return StreamingResponse(
         _stream_alertas(request),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "Connection":    "keep-alive",
-            "X-Accel-Buffering": "no",   # desactiva buffering en nginx
+            "Cache-Control":     "no-cache",
+            "Connection":        "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -827,12 +1077,6 @@ async def alertas_stream(request: Request):
 # =============================================================================
 # ENTRYPOINT
 # =============================================================================
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "api:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-    )
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
