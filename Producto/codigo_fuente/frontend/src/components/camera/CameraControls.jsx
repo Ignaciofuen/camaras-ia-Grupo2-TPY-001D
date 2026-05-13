@@ -19,13 +19,34 @@ const CameraControls = ({
   onSnapshot,
   onTogglePause,
   onReload,
+  onToggleRecord,
   isMuted = true,
   isPaused = false,
+  isRecording = false,
 }) => {
   const btn = "pointer-events-auto p-1.5 text-gray-300 hover:text-white hover:bg-white/20 rounded transition-colors";
 
   return (
     <div className="absolute bottom-0 left-0 w-full p-2 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 flex justify-end items-center gap-2 pointer-events-none">
+
+      {/* Grabar / Detener */}
+      <button
+        onClick={onToggleRecord}
+        className={`${btn} ${isRecording ? 'text-red-500 hover:text-red-300 animate-pulse' : ''}`}
+        title={isRecording ? "Detener grabación (descarga .webm)" : "Iniciar grabación"}
+      >
+        {isRecording ? (
+          // Square stop
+          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+            <rect x="6" y="6" width="12" height="12" rx="1" />
+          </svg>
+        ) : (
+          // Red circle "REC"
+          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="6" />
+          </svg>
+        )}
+      </button>
 
       {/* Snapshot */}
       <button onClick={onSnapshot} className={btn} title="Capturar frame (JPG)">
@@ -80,13 +101,15 @@ const CameraControls = ({
 };
 
 CameraControls.propTypes = {
-  onFullscreen:  PropTypes.func,
-  onToggleMute:  PropTypes.func,
-  onSnapshot:    PropTypes.func,
-  onTogglePause: PropTypes.func,
-  onReload:      PropTypes.func,
-  isMuted:       PropTypes.bool,
-  isPaused:      PropTypes.bool,
+  onFullscreen:   PropTypes.func,
+  onToggleMute:   PropTypes.func,
+  onSnapshot:     PropTypes.func,
+  onTogglePause:  PropTypes.func,
+  onReload:       PropTypes.func,
+  onToggleRecord: PropTypes.func,
+  isMuted:        PropTypes.bool,
+  isPaused:       PropTypes.bool,
+  isRecording:    PropTypes.bool,
 };
 
 export default CameraControls;

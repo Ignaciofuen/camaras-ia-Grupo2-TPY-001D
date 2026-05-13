@@ -207,6 +207,33 @@ class Storage:
         self._client.delete_object(Bucket=MINIO_BUCKET, Key=key)
         return True
 
+    @_safe(default=None)
+    def upload_recording(
+        self,
+        data: bytes,
+        camara_nombre: str = "desconocida",
+        content_type: str = "video/webm",
+        ext: str = "webm",
+    ) -> Optional[str]:
+        """
+        Sube un blob de video (webm/mp4) y devuelve la `key` de MinIO.
+        Formato de key: recordings/YYYY/MM/DD/<camara>/<uuid>.<ext>
+        """
+        now = datetime.now(timezone.utc)
+        key = f"recordings/{self._fecha_prefix(now)}/{camara_nombre}/{uuid.uuid4()}.{ext}"
+        self._client.put_object(
+            Bucket=MINIO_BUCKET,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+            Metadata={
+                "camara": camara_nombre,
+                "capturado_en": now.isoformat(),
+            },
+        )
+        log.debug(f"[storage] Recording subido: {key} ({len(data)/1024/1024:.2f} MB)")
+        return key
+
 
 # -----------------------------------------------------------------------------
 # SINGLETON
