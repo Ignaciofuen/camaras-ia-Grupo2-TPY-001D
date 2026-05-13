@@ -379,6 +379,45 @@ Table salud_servicios {
   '''
 }
 
+// ---------------------------------------------------------------------------
+// 7.bis  GRABACIONES MANUALES  (migration 007)
+// ---------------------------------------------------------------------------
+// Videos .webm/.mp4 que el operador dispara desde el dashboard (boton REC
+// en CameraCard). El browser captura via MediaRecorder+captureStream y al
+// finalizar sube el blob al backend, que lo guarda en MinIO bajo
+// recordings/YYYY/MM/DD/<camara>/<uuid>.<ext>.
+// ---------------------------------------------------------------------------
+Table grabaciones {
+  id              serial      [pk]
+  camara_id       uuid        [not null, ref: > camaras.id]
+  creado_en       timestamptz [not null, default: `now()`]
+  iniciada_en     timestamptz [not null]
+  finalizada_en   timestamptz [not null]
+  duracion_s      integer     [not null]
+  storage_bucket  varchar(120)
+  storage_key     varchar(400) [not null, note: 'recordings/YYYY/MM/DD/<camara>/<uuid>.webm']
+  content_type    varchar(60) [not null, default: 'video/webm']
+  tamano_bytes    bigint
+  nota            text
+
+  Indexes {
+    (camara_id, creado_en) [name: 'idx_grabaciones_camara_creado']
+    (creado_en)            [name: 'idx_grabaciones_creado']
+  }
+
+  Note: '''
+    Grabaciones manuales disparadas por el operador desde el dashboard.
+    Distintas a eventos_deteccion.snapshot_key (JPG de YOLO): acá son
+    videos completos disparados a propósito.
+
+    Endpoints:
+      POST   /grabaciones                 → upload (multipart)
+      GET    /grabaciones                 → listado con filtros
+      GET    /grabaciones/{id}/video      → stream del video inline
+      DELETE /grabaciones/{id}            → borra DB + MinIO
+  '''
+}
+
 Table configuracion_sistema {
   clave           varchar(80) [pk]
   valor           jsonb       [not null]

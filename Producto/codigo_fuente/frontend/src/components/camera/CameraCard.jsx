@@ -3,6 +3,7 @@ import VideoPlayer from './VideoPlayer';
 import CameraOverlay from '../camera/overlays/CameraOverlay';
 import DetectionOverlay from '../camera/overlays/DetectionOverlay';
 import CameraControls from './CameraControls';
+import { useRecording } from '../../hooks/useRecording';
 
 /**
  * CameraCard
@@ -76,6 +77,23 @@ const CameraCard = ({ camera, detections = [] }) => {
     playerRef.current?.reload();
   }, []);
 
+  // ----- Grabación (MediaRecorder + captureStream + upload a MinIO) -----
+  const { isRecording, uploading, start: startRec, stop: stopRec, error: recError } = useRecording();
+
+  const handleToggleRecord = useCallback(() => {
+    if (isRecording) {
+      stopRec();
+      return;
+    }
+    const videoEl = playerRef.current?.getElement?.();
+    if (!videoEl) {
+      console.warn('[CameraCard] no se puede grabar: video no listo');
+      return;
+    }
+    const camName = camera?.nombre || camera?.name || 'camara';
+    startRec(videoEl, camName, camera?.id);
+  }, [isRecording, startRec, stopRec, camera]);
+
   if (!camera) return null;
 
   const isOnline = camera.activa ?? (camera.status === 'online');
@@ -130,6 +148,18 @@ const CameraCard = ({ camera, detections = [] }) => {
             </span>
           </div>
         )}
+        {isRecording && (
+          <div className="absolute top-2 left-2 flex items-center gap-1 bg-red-600/90 text-white text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded">
+            <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+            REC
+          </div>
+        )}
+        {uploading && !isRecording && (
+          <div className="absolute top-2 left-2 flex items-center gap-1 bg-blue-600/90 text-white text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded">
+            <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+            SUBIENDO…
+          </div>
+        )}
       </div>
 
       {/* capa interaccion: botones */}
@@ -137,11 +167,13 @@ const CameraCard = ({ camera, detections = [] }) => {
         <CameraControls
           isMuted={isMuted}
           isPaused={isPaused}
+          isRecording={isRecording}
           onToggleMute={handleToggleMute}
           onFullscreen={handleFullscreen}
           onSnapshot={handleSnapshot}
           onTogglePause={handleTogglePause}
           onReload={handleReload}
+          onToggleRecord={handleToggleRecord}
         />
       </div>
 

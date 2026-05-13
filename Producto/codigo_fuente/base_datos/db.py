@@ -393,6 +393,34 @@ class DB:
                 (analisis_id, alerta_id),
             )
 
+    @_safe(default=None)
+    def guardar_grabacion(
+        self,
+        camara_id: str,
+        iniciada_en,
+        finalizada_en,
+        duracion_s: int,
+        storage_key: str,
+        content_type: str = "video/webm",
+        tamano_bytes: int | None = None,
+        storage_bucket: str | None = None,
+        nota: str | None = None,
+    ) -> int | None:
+        """Inserta una fila en `grabaciones` y devuelve el id."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO grabaciones
+                    (camara_id, iniciada_en, finalizada_en, duracion_s,
+                     storage_bucket, storage_key, content_type, tamano_bytes, nota)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (camara_id, iniciada_en, finalizada_en, duracion_s,
+                 storage_bucket, storage_key, content_type, tamano_bytes, nota),
+            ).fetchone()
+        return row["id"] if row else None
+
     @_safe()
     def reconocer_alerta(self, alerta_id: str, usuario_id: str, nota: str | None = None) -> None:
         with self._conn() as conn:

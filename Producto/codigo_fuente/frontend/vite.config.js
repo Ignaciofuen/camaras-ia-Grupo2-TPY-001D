@@ -35,6 +35,10 @@ export default defineConfig({
       // /sistema/metricas → panel "Sistema" con KPIs agregados (camaras
       // online, latencias YOLO/LLaVA promedio, servicios).
       '/sistema':        'http://localhost:8000',
+      // /snapshots → galería de capturas en Playback
+      '/snapshots':      'http://localhost:8000',
+      // /grabaciones → upload + listado + streaming de grabaciones manuales
+      '/grabaciones':    { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

@@ -349,6 +349,37 @@ COMMENT ON TABLE salud_servicios IS
 COMMENT ON COLUMN salud_servicios.metrica IS
     'Datos variables por servicio: {"fps":8.2} yolo, {"cola":3} llava, {"pendientes":5} worker, etc.';
 
+-- =============================================================================
+-- 7.bis  GRABACIONES MANUALES (introducida en migration 007)
+-- =============================================================================
+-- Videos .webm/.mp4 que el operador dispara manualmente desde el dashboard
+-- (boton REC en CameraCard). El navegador graba con MediaRecorder+captureStream
+-- y al stop sube el blob al backend, que lo guarda en MinIO bajo
+-- recordings/YYYY/MM/DD/<camara>/<uuid>.<ext> y registra esta fila.
+--
+-- Distinto a eventos_deteccion.snapshot_key (que es JPG generado por YOLO):
+-- aca son videos completos disparados a propósito por el operador.
+-- =============================================================================
+CREATE TABLE grabaciones (
+    id              SERIAL PRIMARY KEY,
+    camara_id       UUID         NOT NULL REFERENCES camaras(id) ON DELETE CASCADE,
+    creado_en       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    iniciada_en     TIMESTAMPTZ  NOT NULL,
+    finalizada_en   TIMESTAMPTZ  NOT NULL,
+    duracion_s      INTEGER      NOT NULL,
+    storage_bucket  VARCHAR(120),
+    storage_key     VARCHAR(400) NOT NULL,
+    content_type    VARCHAR(60)  NOT NULL DEFAULT 'video/webm',
+    tamano_bytes    BIGINT,
+    nota            TEXT
+);
+CREATE INDEX idx_grabaciones_camara_creado ON grabaciones (camara_id, creado_en DESC);
+CREATE INDEX idx_grabaciones_creado        ON grabaciones (creado_en DESC);
+COMMENT ON TABLE grabaciones IS
+    'Grabaciones manuales disparadas por el operador desde el dashboard (CameraCard).';
+COMMENT ON COLUMN grabaciones.storage_key IS
+    'Key en MinIO. Convención: recordings/YYYY/MM/DD/<camara>/<uuid>.webm';
+
 CREATE TABLE configuracion_sistema (
     clave           VARCHAR(80) PRIMARY KEY,
     valor           JSONB NOT NULL,

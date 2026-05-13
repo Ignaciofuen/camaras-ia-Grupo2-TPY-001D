@@ -156,14 +156,20 @@ const AlertCard = ({ alert, onDelete }) => {
               <p className="mt-1 text-gray-200 leading-relaxed normal-case">{descripcion}</p>
             </div>
           )}
-          {snapshotKey && alertId && (
+          {alertId && (
             <div>
               <span className="text-gray-500">Snapshot:</span>
               <img
                 src={`/alertas/${alertId}/snapshot`}
                 alt="Snapshot del evento"
-                className="mt-1 max-h-48 border border-gray-700"
+                className="mt-1 max-h-48 border border-gray-700 cursor-zoom-in"
                 onError={(e) => { e.target.style.display = 'none'; }}
+                onClick={(e) => {
+                  // Click en la imagen -> abre el JPG en una pestaña aparte
+                  // para verlo en tamaño completo.
+                  e.stopPropagation();
+                  window.open(e.target.src, '_blank');
+                }}
               />
             </div>
           )}

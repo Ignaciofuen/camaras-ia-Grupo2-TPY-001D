@@ -41,7 +41,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
@@ -350,6 +350,173 @@ def get_camara(camara_id: str):
 # - Si la cámara nunca fue analizada → 404 (no hay estado cacheado).
 # - Ideal para un dashboard que se refresca cada 1-2 segundos.
 
+@app.post("/grabaciones", tags=["grabaciones"])
+async def upload_grabacion(
+    camara_id: str = Form(...),
+    iniciada_en: str = Form(...),
+    finalizada_en: str = Form(...),
+    duracion_s: int = Form(...),
+    content_type: str = Form("video/webm"),
+    nota: str = Form(""),
+    archivo: UploadFile = File(...),
+):
+    """
+    Sube una grabacion .webm/.mp4 a MinIO y la registra en la tabla
+    `grabaciones`. Devuelve el id.
+    """
+    if not storage.habilitado or storage._client is None:
+        raise HTTPException(status_code=503, detail="MinIO no disponible")
+
+    data = await archivo.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacio")
+
+    # Mapear camara_id -> nombre para la key en MinIO
+    cam = _query_one("SELECT nombre FROM camaras WHERE id = %s", (camara_id,))
+    cam_nombre = cam["nombre"] if cam else "desconocida"
+
+    ext = "mp4" if "mp4" in content_type else "webm"
+    key = storage.upload_recording(
+        data=data,
+        camara_nombre=cam_nombre,
+        content_type=content_type,
+        ext=ext,
+    )
+    if not key:
+        raise HTTPException(status_code=502, detail="No se pudo subir a MinIO")
+
+    rec_id = db.guardar_grabacion(
+        camara_id=camara_id,
+        iniciada_en=iniciada_en,
+        finalizada_en=finalizada_en,
+        duracion_s=duracion_s,
+        storage_key=key,
+        content_type=content_type,
+        tamano_bytes=len(data),
+        nota=nota or None,
+    )
+    return {"id": rec_id, "storage_key": key, "tamano_bytes": len(data)}
+
+
+@app.get("/grabaciones", tags=["grabaciones"])
+def list_grabaciones(
+    limite: int = Query(120, ge=1, le=500),
+    desde: Optional[str] = Query(None),
+    hasta: Optional[str] = Query(None),
+    camara_id: Optional[str] = Query(None),
+):
+    """Lista las grabaciones manuales, mas reciente primero."""
+    filtros = []
+    params: list[Any] = []
+    if desde:
+        filtros.append("g.iniciada_en >= %s")
+        params.append(desde)
+    if hasta:
+        filtros.append("g.iniciada_en <= %s")
+        params.append(hasta)
+    if camara_id:
+        filtros.append("g.camara_id = %s")
+        params.append(camara_id)
+
+    where = ("WHERE " + " AND ".join(filtros)) if filtros else ""
+    sql = f"""
+        SELECT g.id, g.camara_id::text AS camara_id, c.nombre AS camara_nombre,
+               g.iniciada_en, g.finalizada_en, g.duracion_s,
+               g.content_type, g.tamano_bytes, g.nota
+          FROM grabaciones g
+          JOIN camaras c ON c.id = g.camara_id
+          {where}
+         ORDER BY g.iniciada_en DESC
+         LIMIT %s
+    """
+    params.append(limite)
+    return _query(sql, tuple(params))
+
+
+@app.get("/grabaciones/{rec_id:int}/video", tags=["grabaciones"])
+def get_grabacion_video(rec_id: int):
+    """Devuelve el .webm inline para el <video> del navegador."""
+    row = _query_one(
+        "SELECT storage_key, content_type FROM grabaciones WHERE id = %s",
+        (rec_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Grabacion no encontrada")
+    data = storage.download_bytes(row["storage_key"])
+    if data is None:
+        raise HTTPException(status_code=502, detail="No se pudo descargar de MinIO")
+    return Response(content=data, media_type=row.get("content_type") or "video/webm")
+
+
+@app.delete("/grabaciones/{rec_id:int}", tags=["grabaciones"])
+def delete_grabacion(rec_id: int):
+    """Borra una grabacion (DB + MinIO)."""
+    row = _query_one("SELECT storage_key FROM grabaciones WHERE id = %s", (rec_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Grabacion no encontrada")
+    try:
+        storage.delete(row["storage_key"])
+    except Exception:
+        pass  # si falla MinIO, igual borramos de la DB
+    with db._conn() as conn:
+        conn.execute("DELETE FROM grabaciones WHERE id = %s", (rec_id,))
+    return {"ok": True, "deleted_id": rec_id}
+
+
+@app.get("/snapshots", tags=["snapshots"])
+def list_snapshots(
+    limite: int = Query(120, ge=1, le=500),
+    desde: Optional[str] = Query(None, description="ISO datetime"),
+    hasta: Optional[str] = Query(None, description="ISO datetime"),
+    camara_id: Optional[str] = Query(None),
+):
+    """
+    Lista de eventos que tienen snapshot subido (galeria). Cada item incluye
+    el alerta_id principal para que el frontend pueda hacer GET /alertas/{id}/snapshot
+    sin tener que pedir un presigned-url de MinIO directamente.
+    """
+    filtros = ["e.snapshot_key IS NOT NULL"]
+    params: list[Any] = []
+    if desde:
+        filtros.append("e.capturado_en >= %s")
+        params.append(desde)
+    if hasta:
+        filtros.append("e.capturado_en <= %s")
+        params.append(hasta)
+    if camara_id:
+        filtros.append("e.camara_id = %s")
+        params.append(camara_id)
+
+    where = "WHERE " + " AND ".join(filtros)
+    sql = f"""
+        SELECT e.id AS evento_id,
+               e.camara_id::text AS camara_id,
+               c.nombre AS camara_nombre,
+               e.capturado_en,
+               e.cantidad_personas,
+               e.snapshot_key,
+               (SELECT a.id::text
+                  FROM alertas a
+                 WHERE a.evento_id = e.id
+              ORDER BY a.disparada_en
+                 LIMIT 1) AS alerta_id,
+               (SELECT ae.nivel
+                  FROM alertas a
+             LEFT JOIN analisis_escena ae ON ae.id = a.analisis_id
+                 WHERE a.evento_id = e.id
+                   AND ae.nivel IS NOT NULL
+              ORDER BY a.disparada_en
+                 LIMIT 1) AS nivel
+          FROM eventos_deteccion e
+          JOIN camaras c ON c.id = e.camara_id
+          {where}
+         ORDER BY e.capturado_en DESC
+         LIMIT %s
+    """
+    params.append(limite)
+    return _query(sql, tuple(params))
+
+
 @app.get("/sistema/metricas", tags=["meta"])
 def sistema_metricas():
     """
@@ -589,8 +756,8 @@ def list_alertas(
     return _query(sql, tuple(params))
 
 
-@app.delete("/alertas/{alerta_id:int}", tags=["alertas"])
-def delete_alerta(alerta_id: int):
+@app.delete("/alertas/{alerta_id}", tags=["alertas"])
+def delete_alerta(alerta_id: str):
     """
     Elimina una alerta por id. El evento_deteccion y el analisis_escena
     asociados NO se borran (son historial). Solo se borra el registro de
@@ -660,13 +827,38 @@ def delete_alertas_batch(
     return {"ok": True, "filtro": {"fecha": fecha, "desde": desde, "hasta": hasta}}
 
 
-@app.get("/alertas/{alerta_id:int}", tags=["alertas"])
-def get_alerta(alerta_id: int):
-    """Detalle de una alerta: incluye evento, cámara y análisis LLaVA si existe.
+# IMPORTANTE: el endpoint SSE /alertas/stream esta DEFINIDO ACA ARRIBA (antes
+# de /alertas/{alerta_id}) para que FastAPI lo matchee primero. Si lo
+# definimos despues, la peticion GET /alertas/stream caeria en el path
+# parametrizado con alerta_id="stream" y rompiamos el SSE.
+# El handler real `_stream_alertas` (async generator) se define mas abajo.
+@app.get("/alertas/stream", tags=["realtime"])
+async def alertas_stream(request: Request):
+    """SSE: empuja cada alerta nueva al cliente en tiempo real."""
+    if not cache.habilitado:
+        raise HTTPException(
+            status_code=503,
+            detail="Redis deshabilitado por configuracion (CAMARAS_REDIS_HABILITADO=0)",
+        )
+    return StreamingResponse(
+        _stream_alertas(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "Connection":        "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
-    NOTA: el path converter `:int` es CRÍTICO. Sin él, FastAPI matchearía
-    GET /alertas/stream con esta ruta (capturando "stream" como alerta_id)
-    y nunca llegaría al endpoint SSE de la línea ~800.
+
+@app.get("/alertas/{alerta_id}", tags=["alertas"])
+def get_alerta(alerta_id: str):
+    """Detalle de una alerta (id = UUID). Incluye evento, cámara y análisis
+    LLaVA si existe.
+
+    NOTA: para evitar que esta ruta capture GET /alertas/stream, el endpoint
+    SSE está definido ANTES en el archivo (orden de definición = prioridad
+    de match en FastAPI).
     """
     sql = """
         SELECT a.id::text AS id, a.numero_alerta, a.titulo, a.mensaje,
@@ -732,6 +924,55 @@ def list_eventos(
     """
     params.extend([limite, offset])
     return _query(sql, tuple(params))
+
+
+@app.delete("/eventos/{evento_id:int}", tags=["eventos"])
+def delete_evento(
+    evento_id: int,
+    solo_snapshot: bool = Query(
+        False,
+        description="Si true, borra solo el JPG de MinIO y conserva el evento/alerta/análisis. "
+                    "Si false (default), borra todo en cascada."
+    ),
+):
+    """
+    Borra una captura.
+
+    - solo_snapshot=false (default): borra el evento_deteccion y por cascade
+      sus alertas, detecciones y análisis. También elimina el JPG de MinIO.
+      Forensic clean: no queda rastro.
+
+    - solo_snapshot=true: borra SOLO el JPG de MinIO y pone snapshot_key=NULL
+      en el evento. Conserva la alerta visible en /alertas y /historial,
+      pero sin foto. Útil cuando querés ocultar la imagen pero preservar
+      el registro del incidente.
+    """
+    row = _query_one(
+        "SELECT snapshot_key FROM eventos_deteccion WHERE id = %s",
+        (evento_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Evento no encontrado")
+    key = row.get("snapshot_key")
+
+    # Borrar JPG en MinIO (en ambos modos)
+    if key:
+        try:
+            storage.delete(key)
+        except Exception:
+            pass  # si MinIO falla, seguimos con la DB
+
+    with db._conn() as conn:
+        if solo_snapshot:
+            conn.execute(
+                "UPDATE eventos_deteccion SET snapshot_key = NULL, snapshot_anotado = FALSE "
+                "WHERE id = %s",
+                (evento_id,),
+            )
+        else:
+            conn.execute("DELETE FROM eventos_deteccion WHERE id = %s", (evento_id,))
+
+    return {"ok": True, "evento_id": evento_id, "solo_snapshot": solo_snapshot}
 
 
 @app.get("/eventos/{evento_id}", tags=["eventos"])
@@ -816,10 +1057,10 @@ def list_notificaciones(
 # SNAPSHOTS (MinIO)
 # =============================================================================
 
-@app.get("/alertas/{alerta_id:int}/snapshot", tags=["snapshots"])
+@app.get("/alertas/{alerta_id}/snapshot", tags=["snapshots"])
 def get_alerta_snapshot(
-    alerta_id: int,
-    modo: str = Query("redirect", description="'redirect' → 302 a presigned URL; 'bytes' → imagen JPG inline"),
+    alerta_id: str,
+    modo: str = Query("bytes", description="'redirect' → 302 a presigned URL; 'bytes' → imagen JPG inline"),
     expires: int = Query(3600, ge=60, le=86400, description="Duración URL presignada (segundos)"),
 ):
     """
@@ -857,7 +1098,7 @@ def get_alerta_snapshot(
 @app.get("/eventos/{evento_id}/snapshot", tags=["snapshots"])
 def get_evento_snapshot(
     evento_id: int,
-    modo: str = Query("redirect"),
+    modo: str = Query("bytes"),
     expires: int = Query(3600, ge=60, le=86400),
 ):
     """Lo mismo que /alertas/{id}/snapshot pero direccionando por evento."""
@@ -1055,23 +1296,9 @@ async def detecciones_stream(request: Request):
     )
 
 
-@app.get("/alertas/stream", tags=["realtime"])
-async def alertas_stream(request: Request):
-    """SSE: empuja cada alerta nueva al cliente en tiempo real."""
-    if not cache.habilitado:
-        raise HTTPException(
-            status_code=503,
-            detail="Redis deshabilitado por configuracion (CAMARAS_REDIS_HABILITADO=0)",
-        )
-    return StreamingResponse(
-        _stream_alertas(request),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control":     "no-cache",
-            "Connection":        "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+# NOTA: el handler @app.get("/alertas/stream") se movió arriba (antes de
+# /alertas/{alerta_id}) para que FastAPI lo matchee primero. Esta seccion
+# queda solo con el async generator _stream_alertas y _stream_detecciones.
 
 
 # =============================================================================
