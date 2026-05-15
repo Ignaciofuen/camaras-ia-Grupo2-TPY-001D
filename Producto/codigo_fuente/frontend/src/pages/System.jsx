@@ -99,7 +99,7 @@ const System = () => {
         />
       </div>
 
-      {/* Cámaras (detalle) */}
+      {/* Cámaras (detalle) — solo monitoreo, edición se hace en /settings */}
       <Section title="Cámaras">
         <Table headers={['Cámara', 'Estado', 'Última conexión', 'Última latencia YOLO', 'Último evento']}>
           {(data?.camaras || []).map((c) => (

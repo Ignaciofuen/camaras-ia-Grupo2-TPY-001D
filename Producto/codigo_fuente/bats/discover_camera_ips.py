@@ -36,17 +36,43 @@ for _sub in ("base_datos", "backend"):
 import argparse
 import json
 import re
+import socket
 import subprocess
 import time
 
 from db import db
 
 
-# Passwords RTSP por MAC (mismo dict que detector.py).
-# Si en el futuro las migramos al .env / DB cifrada, cambiar aca.
-CAMERA_PASSWORDS = {
+def detectar_base_ip() -> str:
+    """
+    Detecta la base /24 de la red local actual (el adaptador con conectividad
+    saliente). Ej: si la PC esta en 192.168.43.100, devuelve '192.168.43'.
+
+    Truco: socket.connect() a una IP externa por UDP NO envía nada, pero
+    Windows/Linux asignan el adaptador correcto y getsockname() devuelve
+    la IP local de ese adaptador. Robusto a redes nuevas, hotspots, etc.
+
+    Si falla por algún motivo, cae a 192.168.1 (la convención de tu casa).
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))   # no manda paquetes (UDP sin send)
+        local_ip = s.getsockname()[0]
+        s.close()
+        partes = local_ip.split(".")
+        if len(partes) == 4:
+            return ".".join(partes[:3])
+    except Exception:
+        pass
+    return "192.168.1"
+
+
+# Passwords RTSP fallback (por MAC). Se usan SOLO si en la DB la columna
+# `camaras.password_rtsp` está vacía (NULL/''). Cuando la migration 008 ya
+# se aplicó, las passes deberían venir de la DB y editarse desde el frontend.
+CAMERA_PASSWORDS_FALLBACK = {
     "08:ea:40:54:9b:f5": os.getenv("CAMARA_PRINCIPAL_PASS", "123456"),
-    "68:b9:d3:5c:cc:fc": os.getenv("CAMARA_SONOFF_PASS",    "itqC6sAd"),
+    "68:b9:d3:5c:cc:fc": os.getenv("CAMARA_SONOFF_PASS",    "Camaras2026"),
 }
 
 
@@ -119,9 +145,12 @@ def main() -> int:
 
     print(f"[*] {len(camaras)} camaras activas en la DB")
 
-    # 3) Despertar la red
+    # 3) Despertar la red (detectando la base IP automaticamente segun el
+    #    adaptador actual: wifi de casa, hotspot del celular, VPN, etc.)
+    base_ip = detectar_base_ip()
+    print(f"[*] Red detectada: {base_ip}.X")
     if not args.no_arp_scan:
-        despertar_red("192.168.1")
+        despertar_red(base_ip)
 
     # 4) Leer ARP
     arp = leer_tabla_arp()
@@ -137,7 +166,8 @@ def main() -> int:
         puerto   = c.get("puerto_rtsp") or 554
         ruta     = c["ruta_rtsp"]
         mtx_path = c.get("mediamtx_path") or ""
-        password = CAMERA_PASSWORDS.get(mac, "")
+        # [MIGRATION 008] Pass desde DB. Si está vacía, fallback al .env.
+        password = c.get("password_rtsp") or CAMERA_PASSWORDS_FALLBACK.get(mac, "")
 
         if mac in arp:
             ip = arp[mac]

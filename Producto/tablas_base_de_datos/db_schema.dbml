@@ -104,7 +104,8 @@ Table camaras {
 
   // Credenciales y ruta RTSP
   usuario_rtsp           varchar(80)
-  password_rtsp_cifrada  bytea        [note: 'Cifrar con pgp_sym_encrypt']
+  password_rtsp_cifrada  bytea        [note: 'Cifrar con pgp_sym_encrypt (no usado, MVP)']
+  password_rtsp          varchar(120) [note: 'Texto plano, editable desde UI (migration 008)']
   puerto_rtsp            integer      [not null, default: 554]
   ruta_rtsp              varchar(200) [not null, note: 'ej: live/ch0, av_stream/ch0']
   mediamtx_path          varchar(120)
@@ -257,7 +258,7 @@ Table reglas_alerta {
 Table alertas {
   id              uuid         [pk, default: `gen_random_uuid()`]
   numero_alerta   bigint       [unique, not null, note: 'Contador global (alertas_totales)']
-  evento_id       bigint       [ref: > eventos_deteccion.id, not null]
+  evento_id       bigint       [ref: > eventos_deteccion.id, note: 'NULL si se borró del historial preservando alerta (migration 009)']
   analisis_id     bigint       [ref: > analisis_escena.id, note: 'NULL si la cámara es solo_yolo']
   regla_id        uuid         [ref: > reglas_alerta.id]
   camara_id       uuid         [ref: > camaras.id, not null]
@@ -399,10 +400,12 @@ Table grabaciones {
   content_type    varchar(60) [not null, default: 'video/webm']
   tamano_bytes    bigint
   nota            text
+  tipo            varchar(20) [not null, default: 'video', note: 'video | snapshot (migration 010)']
 
   Indexes {
     (camara_id, creado_en) [name: 'idx_grabaciones_camara_creado']
     (creado_en)            [name: 'idx_grabaciones_creado']
+    (tipo, creado_en)      [name: 'idx_grabaciones_tipo_creado']
   }
 
   Note: '''

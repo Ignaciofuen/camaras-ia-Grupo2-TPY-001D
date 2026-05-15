@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { alertService } from '../services/alertService';
 import apiClient from '../services/api';
 import AlertCard from '../components/alerts/AlertCard';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 
 /**
  * History
@@ -59,6 +60,24 @@ const History = () => {
   }, [desde, hasta, cameraId, severidad]);
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
+
+  // Borrar item del historial (preserva la alerta en /alertas)
+  const [toDelete, setToDelete] = useState(null);
+  const handleDeleteHistoryItem = async () => {
+    if (!toDelete) return;
+    const item = toDelete;
+    setToDelete(null);
+    try {
+      await apiClient.delete(`/eventos/${item.evento_id}`, {
+        params: { preservar_alerta: true },
+      });
+      // Optimistic: lo saco del listado
+      setItems((prev) => prev.filter((x) => x.evento_id !== item.evento_id));
+    } catch (err) {
+      console.error('[History] error al borrar:', err);
+      alert(`Error: ${err?.response?.data?.detail || err.message}`);
+    }
+  };
 
   return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col overflow-hidden">
@@ -151,16 +170,39 @@ const History = () => {
         {!loading && !error && items.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
             {items.map((ev) => (
-              <AlertCard
-                key={ev.id ?? ev.numero_alerta}
-                alert={ev}
-                // En historico NO permitimos delete individual: la X la
-                // dejamos solo en la pagina /alertas (operativa).
-              />
+              <div key={ev.id ?? ev.numero_alerta} className="relative group">
+                <AlertCard alert={ev} />
+                {/* X para eliminar del HISTORIAL (preserva la alerta en /alertas) */}
+                {ev.evento_id && (
+                  <button
+                    onClick={() => setToDelete(ev)}
+                    title="Eliminar del historial (preserva la alerta)"
+                    className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity bg-red-700/80 hover:bg-red-600 text-white p-1 rounded"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!toDelete}
+        title="¿Borrar del historial?"
+        message={
+          toDelete
+            ? `Borrar el evento del ${new Date(toDelete.disparada_en || toDelete.capturado_en).toLocaleString('es-AR')} (${toDelete.camara_nombre}). La ALERTA seguirá visible en /alertas. Solo se borra la captura, las detecciones y el análisis. Irreversible.`
+            : ''
+        }
+        confirmLabel="Borrar"
+        danger
+        onConfirm={handleDeleteHistoryItem}
+        onCancel={() => setToDelete(null)}
+      />
     </div>
   );
 };

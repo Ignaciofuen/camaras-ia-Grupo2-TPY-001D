@@ -12,7 +12,10 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
  * Click en un item -> modal con detalle + opción de descargar a disco.
  */
 const Playback = () => {
-  const [tab, setTab] = useState('capturas'); // 'capturas' | 'grabaciones'
+  // capturas    = snapshots automáticos de YOLO (eventos_deteccion)
+  // grabaciones = videos .webm grabados desde el botón REC
+  // manuales    = snapshots manuales del botón Snapshot del CameraCard
+  const [tab, setTab] = useState('capturas');
 
   // Filtros comunes
   const today      = new Date().toISOString().slice(0, 10);
@@ -41,7 +44,19 @@ const Playback = () => {
       if (desde)    params.desde     = `${desde}T00:00:00`;
       if (hasta)    params.hasta     = `${hasta}T23:59:59`;
       if (cameraId) params.camara_id = cameraId;
-      const url = tab === 'grabaciones' ? '/grabaciones' : '/snapshots';
+
+      // Mapeo de tab → endpoint + filtro
+      let url;
+      if (tab === 'capturas') {
+        url = '/snapshots';
+      } else if (tab === 'grabaciones') {
+        url = '/grabaciones';
+        params.tipo = 'video';      // solo videos, los snapshots manuales van en tab aparte
+      } else {  // 'manuales'
+        url = '/grabaciones';
+        params.tipo = 'snapshot';
+      }
+
       const { data } = await apiClient.get(url, { params });
       setItems(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -63,14 +78,19 @@ const Playback = () => {
           Reproducción Forense
         </h1>
         <p className="text-xs text-gray-500 font-mono mt-1">
-          {items.length} {tab === 'grabaciones' ? 'grabaciones' : 'capturas'} en el rango seleccionado
+          {items.length} {
+            tab === 'grabaciones' ? 'grabaciones'
+            : tab === 'manuales'    ? 'capturas manuales'
+            :                         'capturas (YOLO)'
+          } en el rango seleccionado
         </p>
       </header>
 
       {/* Tabs */}
       <div className="px-6 pt-3 bg-[#0a0a0a] border-b border-gray-800 shrink-0 flex gap-1">
-        <Tab active={tab === 'capturas'}    onClick={() => { setTab('capturas'); setSelected(null); }}>Capturas</Tab>
+        <Tab active={tab === 'capturas'}    onClick={() => { setTab('capturas'); setSelected(null); }}>Capturas (YOLO)</Tab>
         <Tab active={tab === 'grabaciones'} onClick={() => { setTab('grabaciones'); setSelected(null); }}>Grabaciones</Tab>
+        <Tab active={tab === 'manuales'}    onClick={() => { setTab('manuales'); setSelected(null); }}>Capturas Manuales</Tab>
       </div>
 
       {/* Filtros */}
@@ -104,11 +124,16 @@ const Playback = () => {
         )}
         {!loading && !error && items.length > 0 && (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
-            {items.map((it) => (
-              tab === 'grabaciones'
-                ? <RecordingThumb key={it.id} rec={it} onClick={() => setSelected(it)} />
-                : <SnapshotThumb  key={it.evento_id} snap={it} onClick={() => setSelected(it)} />
-            ))}
+            {items.map((it) => {
+              if (tab === 'capturas') {
+                return <SnapshotThumb key={it.evento_id} snap={it} onClick={() => setSelected(it)} />;
+              }
+              if (tab === 'grabaciones') {
+                return <RecordingThumb key={`g${it.id}`} rec={it} onClick={() => setSelected(it)} />;
+              }
+              // 'manuales'
+              return <ManualSnapshotThumb key={`m${it.id}`} rec={it} onClick={() => setSelected(it)} />;
+            })}
           </div>
         )}
       </div>
@@ -123,6 +148,13 @@ const Playback = () => {
       )}
       {selected && tab === 'grabaciones' && (
         <RecordingModal
+          rec={selected}
+          onClose={() => setSelected(null)}
+          onDeleted={() => { setSelected(null); fetchData(); }}
+        />
+      )}
+      {selected && tab === 'manuales' && (
+        <ManualSnapshotModal
           rec={selected}
           onClose={() => setSelected(null)}
           onDeleted={() => { setSelected(null); fetchData(); }}
@@ -386,6 +418,71 @@ const ModalShell = ({ title, subtitle, onClose, children }) => (
 const Row = ({ label, value }) => (
   <div><span className="text-gray-500">{label}:</span> <span className="text-gray-200">{value}</span></div>
 );
+
+// Thumb para snapshots manuales (img preview en lugar de icono play)
+const ManualSnapshotThumb = ({ rec, onClick }) => (
+  <button onClick={onClick} className="group relative aspect-video bg-black border border-gray-800 hover:border-blue-500 overflow-hidden text-left">
+    <img src={`/grabaciones/${rec.id}/video`} alt={rec.camara_nombre}
+      className="w-full h-full object-cover transition-transform group-hover:scale-105"
+      onError={(e) => { e.target.style.opacity = '0.2'; }} />
+    <span className="absolute top-1 right-1 bg-purple-600/90 text-white text-[8px] font-mono uppercase px-1 py-0.5 rounded">
+      MANUAL
+    </span>
+    <BottomLabel cam={rec.camara_nombre} time={rec.iniciada_en} />
+  </button>
+);
+
+// Modal para snapshots manuales
+const ManualSnapshotModal = ({ rec, onClose, onDeleted }) => {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const handleDelete = async () => {
+    setConfirmOpen(false);
+    try {
+      await apiClient.delete(`/grabaciones/${rec.id}`);
+      onDeleted && onDeleted();
+    } catch (err) {
+      alert('No se pudo borrar.');
+    }
+  };
+
+  return (
+    <>
+      <ModalShell title={`${rec.camara_nombre} · Snapshot manual`} subtitle={fmtTime(rec.iniciada_en)} onClose={onClose}>
+        <div className="flex-1 bg-black flex items-center justify-center min-h-[300px]">
+          <img src={`/grabaciones/${rec.id}/video`} alt="Snapshot manual" className="max-w-full max-h-[80vh] object-contain" />
+        </div>
+        <div className="w-full md:w-80 border-t md:border-t-0 md:border-l border-gray-800 p-4 overflow-y-auto custom-scrollbar text-xs font-mono space-y-2 flex flex-col">
+          <Row label="Tipo"     value="Snapshot manual" />
+          <Row label="Tamaño"   value={rec.tamano_bytes ? `${(rec.tamano_bytes / 1024).toFixed(1)} KB` : '—'} />
+          <Row label="Formato"  value={rec.content_type || 'image/jpeg'} />
+          <Row label="Capturado" value={fmtTime(rec.iniciada_en)} />
+          <div className="flex-1" />
+          <div className="pt-2 border-t border-gray-800 flex gap-2">
+            <a href={`/grabaciones/${rec.id}/video`} download={`${rec.camara_nombre}_${rec.id}.jpg`}
+              className="flex-1 text-center px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs uppercase tracking-wide rounded">
+              Descargar
+            </a>
+            <button onClick={() => setConfirmOpen(true)}
+              className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-xs uppercase tracking-wide rounded">
+              Borrar
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="¿Borrar este snapshot manual?"
+        message={`Snapshot de ${rec.camara_nombre} del ${fmtTime(rec.iniciada_en)}. Se borra de la DB y MinIO. Irreversible.`}
+        confirmLabel="Borrar"
+        danger
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmOpen(false)}
+      />
+    </>
+  );
+};
 
 const fmtTime = (iso) => {
   if (!iso) return '—';

@@ -340,6 +340,101 @@ def get_camara(camara_id: str):
     return _attach_hls_url(cam)
 
 
+@app.post("/sistema/reload-camaras", tags=["sistema"])
+def reload_camaras():
+    """
+    Recarga la config de TODAS las cámaras activas en MediaMTX usando su API
+    REST (`POST /v3/config/paths/patch/{path}`). NO reinicia procesos.
+    El detector ni se entera: sigue consumiendo el mismo stream local desde
+    MediaMTX que ahora se reconecta a la cámara con las credenciales nuevas.
+
+    Devuelve:
+      { ok: true, reloaded: [...nombres...], errors: [...] }
+    """
+    import urllib.request, urllib.error, json as _json
+
+    camaras = db.camaras_activas()
+    reloaded = []
+    errors   = []
+
+    for cam in camaras:
+        nombre   = cam["nombre"]
+        usuario  = cam.get("usuario_rtsp") or ""
+        password = cam.get("password_rtsp") or ""
+        puerto   = cam.get("puerto_rtsp") or 554
+        ruta     = cam.get("ruta_rtsp") or ""
+        ip       = cam.get("ip_actual") or cam.get("ip_respaldo")
+        mtx_path = cam.get("mediamtx_path") or ""
+
+        if not (ip and mtx_path):
+            errors.append({"camara": nombre, "error": "Falta ip o mediamtx_path"})
+            continue
+
+        # Si la cámara usa el path "_lite" (FFmpeg transcoded), el placeholder
+        # vive en el path base. Hoy mediamtx_path coincide con el path real.
+        target_path = mtx_path
+        if mtx_path.endswith("_lite"):
+            target_path = mtx_path[:-len("_lite")]
+
+        source_url = f"rtsp://{usuario}:{password}@{ip}:{puerto}/{ruta}"
+
+        # MediaMTX expone `PATCH /v3/config/paths/patch/{path}` para cambiar
+        # campos individuales sin reiniciar. Si el path no existe, devuelve 404.
+        url = f"http://127.0.0.1:9997/v3/config/paths/patch/{target_path}"
+        payload = _json.dumps({"source": source_url}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=payload, method="PATCH",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+                reloaded.append(nombre)
+        except urllib.error.HTTPError as e:
+            errors.append({"camara": nombre, "error": f"HTTP {e.code}: {e.reason}"})
+        except Exception as e:
+            errors.append({"camara": nombre, "error": str(e)})
+
+    return {"ok": len(errors) == 0, "reloaded": reloaded, "errors": errors}
+
+
+@app.patch("/camaras/{camara_id}/credenciales", tags=["camaras"])
+def patch_credenciales(camara_id: str, body: dict):
+    """
+    Actualiza usuario_rtsp y/o password_rtsp de una cámara.
+    Body: { "usuario_rtsp": "...", "password_rtsp": "..." }
+    (cualquiera de los dos campos opcional)
+
+    NOTA SEG: la pass se guarda en texto plano en `camaras.password_rtsp`.
+    Para producción, migrar a `password_rtsp_cifrada` con pgcrypto.
+    """
+    usuario = body.get("usuario_rtsp")
+    password = body.get("password_rtsp")
+
+    if usuario is None and password is None:
+        raise HTTPException(status_code=400, detail="Pasar al menos usuario_rtsp o password_rtsp")
+
+    sets = []
+    params: list[Any] = []
+    if usuario is not None:
+        sets.append("usuario_rtsp = %s")
+        params.append(usuario)
+    if password is not None:
+        sets.append("password_rtsp = %s")
+        params.append(password)
+    params.append(camara_id)
+
+    with db._conn() as conn:
+        row = conn.execute(
+            f"UPDATE camaras SET {', '.join(sets)} WHERE id = %s "
+            f"RETURNING id::text, nombre, usuario_rtsp",
+            tuple(params),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Cámara no encontrada")
+    return {"ok": True, "camara": row}
+
+
 # =============================================================================
 # ESTADOS EN VIVO (Redis) — respuesta en ~5ms sin tocar Postgres
 # =============================================================================
@@ -358,11 +453,14 @@ async def upload_grabacion(
     duracion_s: int = Form(...),
     content_type: str = Form("video/webm"),
     nota: str = Form(""),
+    tipo: str = Form("video", description="'video' o 'snapshot'"),
     archivo: UploadFile = File(...),
 ):
     """
-    Sube una grabacion .webm/.mp4 a MinIO y la registra en la tabla
-    `grabaciones`. Devuelve el id.
+    Sube una grabacion o snapshot manual a MinIO + registra en `grabaciones`.
+    Diferencia por `tipo`:
+      - tipo='video': .webm/.mp4 desde MediaRecorder
+      - tipo='snapshot': .jpg desde captureStream + canvas
     """
     if not storage.habilitado or storage._client is None:
         raise HTTPException(status_code=503, detail="MinIO no disponible")
@@ -371,15 +469,20 @@ async def upload_grabacion(
     if not data:
         raise HTTPException(status_code=400, detail="Archivo vacio")
 
-    # Mapear camara_id -> nombre para la key en MinIO
     cam = _query_one("SELECT nombre FROM camaras WHERE id = %s", (camara_id,))
     cam_nombre = cam["nombre"] if cam else "desconocida"
 
-    ext = "mp4" if "mp4" in content_type else "webm"
+    if tipo == "snapshot":
+        ext = "jpg"
+        ct  = content_type if content_type.startswith("image/") else "image/jpeg"
+    else:
+        ext = "mp4" if "mp4" in content_type else "webm"
+        ct  = content_type
+
     key = storage.upload_recording(
         data=data,
         camara_nombre=cam_nombre,
-        content_type=content_type,
+        content_type=ct,
         ext=ext,
     )
     if not key:
@@ -391,11 +494,12 @@ async def upload_grabacion(
         finalizada_en=finalizada_en,
         duracion_s=duracion_s,
         storage_key=key,
-        content_type=content_type,
+        content_type=ct,
         tamano_bytes=len(data),
         nota=nota or None,
+        tipo=tipo,
     )
-    return {"id": rec_id, "storage_key": key, "tamano_bytes": len(data)}
+    return {"id": rec_id, "storage_key": key, "tamano_bytes": len(data), "tipo": tipo}
 
 
 @app.get("/grabaciones", tags=["grabaciones"])
@@ -404,8 +508,9 @@ def list_grabaciones(
     desde: Optional[str] = Query(None),
     hasta: Optional[str] = Query(None),
     camara_id: Optional[str] = Query(None),
+    tipo: Optional[str] = Query(None, description="'video' o 'snapshot' (default: ambos)"),
 ):
-    """Lista las grabaciones manuales, mas reciente primero."""
+    """Lista las grabaciones/snapshots manuales, más reciente primero."""
     filtros = []
     params: list[Any] = []
     if desde:
@@ -417,12 +522,15 @@ def list_grabaciones(
     if camara_id:
         filtros.append("g.camara_id = %s")
         params.append(camara_id)
+    if tipo:
+        filtros.append("g.tipo = %s")
+        params.append(tipo)
 
     where = ("WHERE " + " AND ".join(filtros)) if filtros else ""
     sql = f"""
         SELECT g.id, g.camara_id::text AS camara_id, c.nombre AS camara_nombre,
                g.iniciada_en, g.finalizada_en, g.duracion_s,
-               g.content_type, g.tamano_bytes, g.nota
+               g.content_type, g.tamano_bytes, g.nota, g.tipo
           FROM grabaciones g
           JOIN camaras c ON c.id = g.camara_id
           {where}
@@ -696,31 +804,36 @@ def list_alertas(
     filtros = []
     params: list[Any] = []
 
+    # Prefijo `v.` necesario porque la query sin filtro_cam hace JOIN entre la
+    # vista (v) y la tabla alertas (a) — las columnas disparada_en, severidad,
+    # etc. existen en ambas y postgres tira AmbiguousColumn si no las califico.
     if severidad:
-        filtros.append("severidad = %s")
+        filtros.append("v.severidad = %s")
         params.append(severidad.lower())
     if camara_id:
         # La vista no expone camara_id cruda; filtramos por nombre o hay que pegarle a la tabla cruda.
         # Hacemos join directo a la tabla para poder filtrar por id.
         pass
     if estado:
-        filtros.append("estado = %s")
+        filtros.append("v.estado = %s")
         params.append(estado.lower())
     if desde:
-        filtros.append("disparada_en >= %s")
+        filtros.append("v.disparada_en >= %s")
         params.append(desde)
     if hasta:
-        filtros.append("disparada_en <= %s")
+        filtros.append("v.disparada_en <= %s")
         params.append(hasta)
 
     if camara_id:
         # Caso con filtro por cámara → query sobre tabla cruda
         filtros_cam = ["a.camara_id = %s"]
         params_cam: list[Any] = [camara_id]
+        # Los filtros tienen prefijo `v.` (para la vista). Acá traducimos a `a.`
+        # porque esta query usa la tabla cruda `alertas a` (no la vista).
         for f, p in zip(filtros, params):
-            filtros_cam.append(f.replace("severidad", "a.severidad")
-                                 .replace("estado", "a.estado")
-                                 .replace("disparada_en", "a.disparada_en"))
+            filtros_cam.append(f.replace("v.severidad",    "a.severidad")
+                                 .replace("v.estado",      "a.estado")
+                                 .replace("v.disparada_en","a.disparada_en"))
             params_cam.append(p)
         where = "WHERE " + " AND ".join(filtros_cam)
         sql = f"""
@@ -740,16 +853,18 @@ def list_alertas(
         params_cam.extend([limite, offset])
         return _query(sql, tuple(params_cam))
 
-    # Sin filtro por cámara → usamos la vista
+    # Sin filtro por cámara → usamos la vista (con evento_id agregado por JOIN)
     where = ("WHERE " + " AND ".join(filtros)) if filtros else ""
     sql = f"""
-        SELECT id::text AS id, numero_alerta, titulo, severidad, estado, disparada_en,
-               camara_nombre, modo_analisis, sitio_nombre,
-               llava_nivel, llava_sospechoso, llava_descripcion, llava_acciones,
-               cantidad_personas, reconocida_por_nombre
-          FROM v_alertas_completas
+        SELECT v.id::text AS id, v.numero_alerta, v.titulo, v.severidad, v.estado, v.disparada_en,
+               v.camara_nombre, v.modo_analisis, v.sitio_nombre,
+               v.llava_nivel, v.llava_sospechoso, v.llava_descripcion, v.llava_acciones,
+               v.cantidad_personas, v.reconocida_por_nombre,
+               a.evento_id  -- necesario para DELETE /eventos/{{id}}
+          FROM v_alertas_completas v
+          JOIN alertas a ON a.id = v.id
           {where}
-         ORDER BY disparada_en DESC
+         ORDER BY v.disparada_en DESC
          LIMIT %s OFFSET %s
     """
     params.extend([limite, offset])
@@ -931,21 +1046,21 @@ def delete_evento(
     evento_id: int,
     solo_snapshot: bool = Query(
         False,
-        description="Si true, borra solo el JPG de MinIO y conserva el evento/alerta/análisis. "
-                    "Si false (default), borra todo en cascada."
+        description="Si true, borra solo el JPG de MinIO y conserva el evento/alerta/análisis."
+    ),
+    preservar_alerta: bool = Query(
+        False,
+        description="Si true, borra el evento_deteccion (snapshot + análisis + detecciones) "
+                    "pero PRESERVA la alerta visible en /alertas. Requiere migration 009."
     ),
 ):
     """
-    Borra una captura.
+    Borra una captura. Tres modos:
 
-    - solo_snapshot=false (default): borra el evento_deteccion y por cascade
-      sus alertas, detecciones y análisis. También elimina el JPG de MinIO.
-      Forensic clean: no queda rastro.
-
-    - solo_snapshot=true: borra SOLO el JPG de MinIO y pone snapshot_key=NULL
-      en el evento. Conserva la alerta visible en /alertas y /historial,
-      pero sin foto. Útil cuando querés ocultar la imagen pero preservar
-      el registro del incidente.
+    - default: borra evento + alertas + análisis + detecciones + JPG MinIO. Forensic clean.
+    - solo_snapshot=true: borra SOLO el JPG, conserva todo el resto.
+    - preservar_alerta=true: borra evento + análisis + detecciones + JPG, PRESERVA la alerta.
+      Útil cuando quieren limpiar el historial pero dejar las alertas en /alertas.
     """
     row = _query_one(
         "SELECT snapshot_key FROM eventos_deteccion WHERE id = %s",
@@ -955,12 +1070,12 @@ def delete_evento(
         raise HTTPException(status_code=404, detail="Evento no encontrado")
     key = row.get("snapshot_key")
 
-    # Borrar JPG en MinIO (en ambos modos)
+    # Borrar JPG en MinIO (en los 3 modos)
     if key:
         try:
             storage.delete(key)
         except Exception:
-            pass  # si MinIO falla, seguimos con la DB
+            pass
 
     with db._conn() as conn:
         if solo_snapshot:
@@ -969,10 +1084,23 @@ def delete_evento(
                 "WHERE id = %s",
                 (evento_id,),
             )
+        elif preservar_alerta:
+            # Desligar las alertas para que la FK ON DELETE SET NULL (migration 009)
+            # no las borre cuando borremos el evento.
+            conn.execute(
+                "UPDATE alertas SET evento_id = NULL WHERE evento_id = %s",
+                (evento_id,),
+            )
+            conn.execute("DELETE FROM eventos_deteccion WHERE id = %s", (evento_id,))
         else:
             conn.execute("DELETE FROM eventos_deteccion WHERE id = %s", (evento_id,))
 
-    return {"ok": True, "evento_id": evento_id, "solo_snapshot": solo_snapshot}
+    return {
+        "ok":              True,
+        "evento_id":       evento_id,
+        "solo_snapshot":   solo_snapshot,
+        "preservar_alerta": preservar_alerta,
+    }
 
 
 @app.get("/eventos/{evento_id}", tags=["eventos"])
