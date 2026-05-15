@@ -44,21 +44,44 @@ const CameraCard = ({ camera, detections = [] }) => {
     }
   }, []);
 
-  /** Captura el frame actual y lo descarga como JPG. */
-  const handleSnapshot = useCallback(() => {
+  /** Captura el frame actual y lo SUBE al servidor (aparece en Playback).
+   *  Si el upload falla, fallback a descarga local. */
+  const handleSnapshot = useCallback(async () => {
     const dataUrl = playerRef.current?.captureFrame();
     if (!dataUrl) {
       console.warn('[CameraCard] snapshot vacio (video no esta listo)');
       return;
     }
-    const a = document.createElement('a');
-    const camName = camera?.nombre || camera?.name || 'camara';
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    a.href = dataUrl;
-    a.download = `${camName}_${ts}.jpg`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+
+    // dataURL → Blob
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+
+    // Subir al backend
+    try {
+      const form = new FormData();
+      form.append('camara_id', camera?.id || '');
+      const now = new Date();
+      form.append('iniciada_en',   now.toISOString());
+      form.append('finalizada_en', now.toISOString());
+      form.append('duracion_s', '0');
+      form.append('content_type', 'image/jpeg');
+      form.append('tipo', 'snapshot');
+      form.append('archivo', blob, `${camera?.nombre || 'camara'}.jpg`);
+      const resp = await fetch('/grabaciones', { method: 'POST', body: form });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      console.log('[CameraCard] snapshot subido OK');
+    } catch (e) {
+      console.warn('[CameraCard] upload snapshot falló, descargo local:', e);
+      const a = document.createElement('a');
+      const camName = camera?.nombre || camera?.name || 'camara';
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      a.href = dataUrl;
+      a.download = `${camName}_${ts}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
   }, [camera]);
 
   /** Pausa/reanuda el stream del lado del cliente. La camara y el detector

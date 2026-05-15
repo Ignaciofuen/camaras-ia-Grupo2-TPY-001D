@@ -99,6 +99,7 @@ CREATE TABLE camaras (
     ip_actualizada_en      TIMESTAMPTZ,
     usuario_rtsp           VARCHAR(80),
     password_rtsp_cifrada  BYTEA,
+    password_rtsp          VARCHAR(120),  -- texto plano editable desde UI (migration 008)
     puerto_rtsp            INTEGER NOT NULL DEFAULT 554,
     ruta_rtsp              VARCHAR(200) NOT NULL,
     mediamtx_path          VARCHAR(120),
@@ -129,6 +130,9 @@ CREATE TRIGGER trg_camaras_updated BEFORE UPDATE ON camaras
     FOR EACH ROW EXECUTE FUNCTION set_actualizado_en();
 COMMENT ON COLUMN camaras.password_rtsp_cifrada IS
     'Cifrar con: pgp_sym_encrypt(password, current_setting(''app.rtsp_key''))';
+COMMENT ON COLUMN camaras.password_rtsp IS
+    'Contraseña RTSP en texto plano (MVP). Reemplaza CAMARA_*_PASS del .env. '
+    'Editable desde el frontend (página Configuración). En prod usar password_rtsp_cifrada.';
 
 CREATE TABLE zonas (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -241,7 +245,9 @@ CREATE SEQUENCE seq_numero_alerta;
 CREATE TABLE alertas (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     numero_alerta   BIGINT UNIQUE NOT NULL DEFAULT nextval('seq_numero_alerta'),
-    evento_id       BIGINT NOT NULL REFERENCES eventos_deteccion(id) ON DELETE CASCADE,
+    -- [MIGRATION 009] nullable + ON DELETE SET NULL para permitir borrar el
+    -- evento del historial conservando la alerta visible en /alertas.
+    evento_id       BIGINT REFERENCES eventos_deteccion(id) ON DELETE SET NULL,
     analisis_id     BIGINT REFERENCES analisis_escena(id) ON DELETE SET NULL,
     regla_id        UUID   REFERENCES reglas_alerta(id)   ON DELETE SET NULL,
     camara_id       UUID NOT NULL REFERENCES camaras(id)  ON DELETE CASCADE,
@@ -371,10 +377,13 @@ CREATE TABLE grabaciones (
     storage_key     VARCHAR(400) NOT NULL,
     content_type    VARCHAR(60)  NOT NULL DEFAULT 'video/webm',
     tamano_bytes    BIGINT,
-    nota            TEXT
+    nota            TEXT,
+    -- [MIGRATION 010] tipo de grabacion: video (default) o snapshot manual
+    tipo            VARCHAR(20)  NOT NULL DEFAULT 'video' CHECK (tipo IN ('video','snapshot'))
 );
 CREATE INDEX idx_grabaciones_camara_creado ON grabaciones (camara_id, creado_en DESC);
 CREATE INDEX idx_grabaciones_creado        ON grabaciones (creado_en DESC);
+CREATE INDEX idx_grabaciones_tipo_creado   ON grabaciones (tipo, creado_en DESC);
 COMMENT ON TABLE grabaciones IS
     'Grabaciones manuales disparadas por el operador desde el dashboard (CameraCard).';
 COMMENT ON COLUMN grabaciones.storage_key IS

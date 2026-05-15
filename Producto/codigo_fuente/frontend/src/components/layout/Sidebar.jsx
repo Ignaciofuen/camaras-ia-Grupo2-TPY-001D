@@ -1,11 +1,12 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 
 const navItems = [
-  { path: '/', label: 'Dashboard' },
-  { path: '/alerts', label: 'Alertas' },
-  { path: '/history', label: 'Historial' },
-  { path: '/playback', label: 'Playback' },
-  { path: '/system', label: 'Sistema' }
+  { path: '/',          label: 'Dashboard' },
+  { path: '/alerts',    label: 'Alertas' },
+  { path: '/history',   label: 'Historial' },
+  { path: '/playback',  label: 'Playback' },
+  { path: '/system',    label: 'Sistema' },
+  { path: '/settings',  label: 'Configuración' },
 ];
 
 /**

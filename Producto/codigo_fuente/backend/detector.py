@@ -120,14 +120,13 @@ _hb_yolo = Heartbeat(
 
 # --- CONFIGURACIÓN DE RED INTELIGENTE (MULTI-CÁMARA) ---
 
-# [DB] Passwords RTSP NO viven aún en la DB (falta encriptación).
-#      Se guardan acá indexados por MAC y se inyectan a las cámaras que
-#      vienen de la DB. Cuando agreguemos cifrado, pasan a la tabla.
-# [FIX] Las MAC se guardan en minúscula para que el lookup sea case-insensitive
-#       (Postgres tipo MACADDR las devuelve siempre en minúscula).
-CAMERA_PASSWORDS = {
+# [MIGRATION 008] Las passes ahora viven en `camaras.password_rtsp` (DB).
+# Este dict es FALLBACK por MAC: se usa solo cuando la DB devuelve NULL para
+# una cámara (ej. migration no aplicada, o cámara nueva creada sin pass).
+# Mantener actualizado para no quedarte sin acceso si la DB pierde el campo.
+CAMERA_PASSWORDS_FALLBACK = {
     "08:ea:40:54:9b:f5": "123456",
-    "68:b9:d3:5c:cc:fc": "itqC6sAd",
+    "68:b9:d3:5c:cc:fc": "Camaras2026",
 }
 
 # [DB] Fallback hardcoded: si la DB no está disponible, arrancamos con esto.
@@ -165,7 +164,8 @@ def _cargar_camaras():
                 "nombre":         c["nombre"],
                 "mac":            c["direccion_mac"],
                 "usuario":        c["usuario_rtsp"],
-                "password":       CAMERA_PASSWORDS.get(c["direccion_mac"].lower(), ""),
+                # [MIGRATION 008] pass desde DB; fallback al dict por MAC.
+                "password":       c.get("password_rtsp") or CAMERA_PASSWORDS_FALLBACK.get(c["direccion_mac"].lower(), ""),
                 "ruta_rtsp":      c["ruta_rtsp"],
                 "puerto_rtsp":    c.get("puerto_rtsp") or 554,
                 "ip_respaldo":    c["ip_respaldo"],
@@ -184,7 +184,7 @@ def _cargar_camaras():
                 "nombre":         c["nombre"],
                 "mac":            c["mac"],
                 "usuario":        c["usuario"],
-                "password":       CAMERA_PASSWORDS.get(c["mac"].lower(), ""),
+                "password":       CAMERA_PASSWORDS_FALLBACK.get(c["mac"].lower(), ""),
                 "ruta_rtsp":      c["ruta_rtsp"],
                 "puerto_rtsp":    554,
                 "ip_respaldo":    c["ip_respaldo"],

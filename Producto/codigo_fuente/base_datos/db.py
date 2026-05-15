@@ -186,7 +186,8 @@ class DB:
                 SELECT id, nombre, direccion_mac::text AS direccion_mac,
                        host(ip_actual)   AS ip_actual,
                        host(ip_respaldo) AS ip_respaldo,
-                       usuario_rtsp, puerto_rtsp, ruta_rtsp,
+                       usuario_rtsp, password_rtsp,  -- [MIGRATION 008] pass editable desde UI
+                       puerto_rtsp, ruta_rtsp,
                        modo_analisis, confianza_visual, confianza_alerta,
                        procesar_cada_n_frames, duracion_alerta_seg, frames_ausencia,
                        contexto_zona, activa,
@@ -405,6 +406,7 @@ class DB:
         tamano_bytes: int | None = None,
         storage_bucket: str | None = None,
         nota: str | None = None,
+        tipo: str = "video",
     ) -> int | None:
         """Inserta una fila en `grabaciones` y devuelve el id."""
         with self._conn() as conn:
@@ -412,12 +414,12 @@ class DB:
                 """
                 INSERT INTO grabaciones
                     (camara_id, iniciada_en, finalizada_en, duracion_s,
-                     storage_bucket, storage_key, content_type, tamano_bytes, nota)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     storage_bucket, storage_key, content_type, tamano_bytes, nota, tipo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (camara_id, iniciada_en, finalizada_en, duracion_s,
-                 storage_bucket, storage_key, content_type, tamano_bytes, nota),
+                 storage_bucket, storage_key, content_type, tamano_bytes, nota, tipo),
             ).fetchone()
         return row["id"] if row else None
 

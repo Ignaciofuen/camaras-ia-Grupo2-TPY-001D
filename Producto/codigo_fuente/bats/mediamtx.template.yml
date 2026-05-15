@@ -67,8 +67,11 @@ authJWTAudience:
 ###############################################
 # Control API / Metrics / PPROF / Playback
 
-api: false
-apiAddress: :9997
+# API REST de MediaMTX activa en :9997. La usa el backend para recargar
+# la config de un path en caliente cuando cambian credenciales desde la UI,
+# sin reiniciar el proceso. Solo escuchamos en localhost por seguridad.
+api: true
+apiAddress: 127.0.0.1:9997
 apiEncryption: false
 apiServerKey: server.key
 apiServerCert: server.crt
