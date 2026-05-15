@@ -1,122 +1,78 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 
-/**
- * useStream
- *
- * Este hook maneja toda la lógica del stream HLS.
- *
- * Acá se hace:
- * - inicialización del video
- * - reconexión automática
- * - manejo de errores
- * - limpieza de memoria
- *
- * Importante:
- * Este hook tiene la lógica, el componente solo debería renderizar el <video>
- *
- * @param {Object} videoRef referencia al elemento <video>
- * @param {string} streamUrl URL del stream (.m3u8)
- */
 export const useStream = (videoRef, streamUrl) => {
-  // estado general del stream para mostrar loading / error en UI
   const [status, setStatus] = useState('loading');
-
-  // guardo la instancia de hls para poder destruirla después
   const hlsRef = useRef(null);
 
-  /**
-   * función que inicia o reinicia el stream
-   */
   const initStream = useCallback(() => {
     const video = videoRef.current;
 
-    // si no hay video o no hay URL, no se puede hacer nada
-    if (!video || !streamUrl) {
+    if (!streamUrl) {
+      setStatus('loading');
+      return;
+    }
+
+    if (!video) {
       setStatus('error');
       return;
     }
 
     setStatus('loading');
 
-    // si ya había un stream activo, lo destruyo para evitar fugas de memoria
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
 
-    /**
-     * caso normal (Chrome, Firefox, Edge, Android)
-     */
     if (Hls.isSupported()) {
       const hls = new Hls({
-        enableWorker: true, // mejora rendimiento usando web workers
-        lowLatencyMode: true, // intenta reducir el delay
-
-        // esto es importante para no llenar la RAM con buffer viejo
-        backBufferLength: 30,
-
-        // intenta mantenerse cerca del "en vivo"
-        liveSyncDurationCount: 3,
-
-        // en sistemas de cámaras no queremos que el stream muera
-        // por eso dejamos reintentos infinitos
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 5,
+        liveSyncDurationCount: 2,
+        liveMaxLatencyDurationCount: 6,
+        maxLiveSyncPlaybackRate: 1.5,
         manifestLoadingMaxRetry: -1,
         manifestLoadingRetryDelay: 3000,
         levelLoadingMaxRetry: -1,
       });
 
       hlsRef.current = hls;
-
-      // conecto hls con el elemento <video>
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
         hls.loadSource(streamUrl);
       });
 
-      // cuando ya se puede reproducir
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         video.play().catch(() => setStatus('error'));
       });
 
-      /**
-       * manejo de errores
-       * esto es clave porque los streams pueden caerse en cualquier momento
-       */
       hls.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              // si se cae la red, intento reconectar
-              console.warn(`[useStream] problema de red en ${streamUrl}`);
-              hls.startLoad();
-              setStatus('loading');
-              break;
+        if (!data.fatal) return;
 
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              // si falla el video, intento recuperarlo
-              console.warn(`[useStream] error de video en ${streamUrl}`);
-              hls.recoverMediaError();
-              setStatus('loading');
-              break;
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            console.warn(`[useStream] problema de red en ${streamUrl}`);
+            hls.startLoad();
+            setStatus('loading');
+            break;
 
-            default:
-              // error grave, no se puede recuperar
-              console.error(`[useStream] error fatal en ${streamUrl}`);
-              hls.destroy();
-              setStatus('error');
-              break;
-          }
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            console.warn(`[useStream] error de video en ${streamUrl}`);
+            hls.recoverMediaError();
+            setStatus('loading');
+            break;
+
+          default:
+            console.error(`[useStream] error fatal en ${streamUrl}`);
+            hls.destroy();
+            setStatus('error');
+            break;
         }
       });
-    }
-
-    /**
-     * Safari / iOS
-     * estos navegadores ya soportan HLS sin hls.js
-     */
-    else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = streamUrl;
 
       const handleLoadedMetadata = () => {
@@ -124,29 +80,17 @@ export const useStream = (videoRef, streamUrl) => {
       };
 
       video.addEventListener('loadedmetadata', handleLoadedMetadata);
-
-      // guardo la referencia para poder limpiarlo después
       video._hlsHandler = handleLoadedMetadata;
-    }
-
-    /**
-     * navegador no soportado
-     */
-    else {
+    } else {
       console.error('[useStream] navegador no compatible con HLS');
       setStatus('error');
     }
   }, [streamUrl, videoRef]);
 
-  /**
-   * efecto principal
-   */
   useEffect(() => {
-    initStream();
+    const initTimer = window.setTimeout(initStream, 0);
 
     const video = videoRef.current;
-
-    // eventos del video para saber en qué estado está
     const handlePlaying = () => setStatus('playing');
     const handleWaiting = () => setStatus('loading');
     const handleError = () => setStatus('error');
@@ -157,11 +101,9 @@ export const useStream = (videoRef, streamUrl) => {
       video.addEventListener('error', handleError);
     }
 
-    /**
-     * limpieza cuando se desmonta el componente
-     * esto es MUY importante si hay varias cámaras
-     */
     return () => {
+      window.clearTimeout(initTimer);
+
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -172,13 +114,11 @@ export const useStream = (videoRef, streamUrl) => {
         video.removeEventListener('waiting', handleWaiting);
         video.removeEventListener('error', handleError);
 
-        // limpiar listener de safari
         if (video._hlsHandler) {
           video.removeEventListener('loadedmetadata', video._hlsHandler);
           delete video._hlsHandler;
         }
 
-        // limpiar completamente el video para liberar memoria
         video.pause();
         video.src = '';
         video.removeAttribute('src');
@@ -187,9 +127,6 @@ export const useStream = (videoRef, streamUrl) => {
     };
   }, [initStream, videoRef]);
 
-  /**
-   * permite recargar el stream manualmente
-   */
   const reloadStream = useCallback(() => {
     initStream();
   }, [initStream]);

@@ -11,6 +11,7 @@ import History from '../pages/History';
 import Playback from '../pages/Playback';
 import System from '../pages/System';
 import Settings from '../pages/Settings';
+import UserManager from '../pages/UserManager';
 
 export default function AppRouter() {
   return (
@@ -27,6 +28,7 @@ export default function AppRouter() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/history" element={<History />} />
             <Route path="/playback" element={<Playback />} />
+            <Route path="/users" element={<UserManager />} />
             <Route path="/system" element={<System />} />
             <Route path="/settings" element={<Settings />} />
           </Route>

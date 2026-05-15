@@ -26,6 +26,8 @@ const Navbar = ({ wsStatus = 'offline' }) => {
       '/alerts': 'Alertas',
       '/history': 'Historial',
       '/playback': 'Playback',
+      '/users': 'Usuarios',
+      '/settings': 'Configuracion',
       '/system': 'Sistema'
     };
     return titles[path] || 'Sistema';

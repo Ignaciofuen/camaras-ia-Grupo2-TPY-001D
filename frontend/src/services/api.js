@@ -2,25 +2,28 @@ import axios from 'axios';
 import { getToken, removeToken } from '../auth/tokenService';
 
 /**
- * Instancia central de Axios.
+ * Cliente HTTP centralizado.
+ *
+ * En desarrollo usa rutas relativas para aprovechar el proxy de Vite.
+ * En produccion se puede definir VITE_API_URL.
+ *
+ * La seguridad se mantiene aca: cualquier servicio que use este cliente
+ * recibe automaticamente Authorization: Bearer <token>.
  */
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL,
-  timeout: 5000,
+  baseURL: import.meta.env.VITE_API_URL || '',
+  timeout: 10000,
   headers: {
     'Content-Type': 'application/json',
+    Accept: 'application/json',
   },
 });
 
-/**
- * Interceptor de request
- */
 api.interceptors.request.use(
   (config) => {
     const token = getToken();
 
     if (token) {
-      // aseguramos que headers exista
       config.headers = config.headers || {};
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -30,34 +33,13 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-/**
- * Interceptor de response
- */
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // sin respuesta → backend caído / red
-    if (!error.response) {
-      console.error('[API] sin conexión o servidor caído');
-      return Promise.reject({
-        message: 'Servidor no disponible',
-        type: 'network',
-      });
+    if (error.name === 'CanceledError' || error.code === 'ERR_CANCELED') {
+      return Promise.reject(error);
     }
 
-    const { status } = error.response;
-
-    // 401 → sesión inválida
-    if (status === 401) {
-      removeToken();
-
-      // evitamos loop si ya estamos en login
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
-      }
-    }
-
-    // timeout
     if (error.code === 'ECONNABORTED') {
       console.error('[API] timeout');
       return Promise.reject({
@@ -66,11 +48,32 @@ api.interceptors.response.use(
       });
     }
 
-    // errores del backend
+    if (!error.response) {
+      console.error('[API] sin conexion o servidor caido');
+      return Promise.reject({
+        message: 'Servidor no disponible',
+        type: 'network',
+      });
+    }
+
+    const { status } = error.response;
+
+    if (status === 401) {
+      removeToken();
+
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    }
+
     return Promise.reject({
-      message: error.response.data?.message || 'Error del servidor',
+      message:
+        error.response.data?.message ||
+        error.response.data?.detail ||
+        'Error del servidor',
       status,
       type: 'api',
+      data: error.response.data,
     });
   }
 );

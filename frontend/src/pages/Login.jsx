@@ -23,7 +23,7 @@ const Login = () => {
       // redirección real después de login
       navigate('/', { replace: true });
 
-    } catch (err) {
+    } catch {
       setError('Credenciales inválidas o servidor no disponible');
     } finally {
       setLoading(false);

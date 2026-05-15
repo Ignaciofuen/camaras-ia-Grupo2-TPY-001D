@@ -1,5 +1,3 @@
-import { useState } from 'react';
-
 /**
  * Settings
  * Página de configuración global del sistema VMS.
@@ -8,9 +6,6 @@ import { useState } from 'react';
  */
 const Settings = () => {
   // Estado preparado para la futura integración con el backend
-  const [settingsData, setSettingsData] = useState(null);
-  const [isSaving, setIsSaving] = useState(false);
-
   // Simulación estructural del manejador de guardado
   const handleSave = async (e) => {
     e.preventDefault();
@@ -31,7 +26,6 @@ const Settings = () => {
             type="button" 
             className="btn-save-settings" 
             onClick={handleSave}
-            disabled={isSaving}
           >
             Guardar Cambios
           </button>
