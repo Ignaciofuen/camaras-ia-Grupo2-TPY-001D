@@ -39,6 +39,10 @@ export default defineConfig({
       '/snapshots':      'http://localhost:8000',
       // /grabaciones → upload + listado + streaming de grabaciones manuales
       '/grabaciones':    { target: 'http://localhost:8000', changeOrigin: true },
+      // /auth → login / profile / logout
+      '/auth':           'http://localhost:8000',
+      // /usuarios → CRUD de usuarios (admin only)
+      '/usuarios':       'http://localhost:8000',
     },
   },
 })

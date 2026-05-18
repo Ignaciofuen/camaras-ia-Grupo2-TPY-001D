@@ -1,46 +1,66 @@
 import axios from 'axios';
+import { getToken, removeToken } from '../auth/tokenService';
 
 /**
- * api.js
- * Configuracion centralizada del cliente HTTP (Axios).
+ * api.js — Cliente HTTP centralizado con auth JWT.
  *
- * En dev: baseURL queda vacio y los servicios usan rutas relativas.
- * Vite redirige /health, /camaras, /alertas, etc. al backend FastAPI
- * en localhost:8000 via el proxy definido en vite.config.js.
+ * - En dev: baseURL = '' → Vite hace proxy a localhost:8000 (vite.config.js).
+ * - En prod: setear VITE_API_URL.
  *
- * En prod: setear VITE_API_URL=https://api.tu-dominio.com en .env.production
- *
- * IMPORTANTE: el backend FastAPI NO tiene prefix /api. Los endpoints son
- * /health, /camaras, /alertas, etc. (no /api/health).
+ * Interceptors:
+ *   - request:  agrega Authorization: Bearer <token> si hay JWT.
+ *   - response: 401 → borra token y redirige a /login.
  */
-const baseURL = import.meta.env.VITE_API_URL || '';
-
 const apiClient = axios.create({
-  baseURL,
+  baseURL: import.meta.env.VITE_API_URL || '',
+  timeout: 10000,
   headers: {
     'Content-Type': 'application/json',
     'Accept':       'application/json',
   },
-  // Timeout vital en sistemas de monitoreo: si el backend se cae, no colgamos la UI
-  timeout: 10000,
 });
 
-// Interceptor de request (listo para inyectar JWT en el futuro)
 apiClient.interceptors.request.use(
   (config) => {
-    // const token = localStorage.getItem('token');
-    // if (token) config.headers.Authorization = `Bearer ${token}`;
+    const token = getToken();
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   },
   (error) => Promise.reject(error)
 );
 
-// Interceptor de response (log centralizado de errores)
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    const code = error.response?.status || 'Network';
+    // Ignorar cancelaciones (AbortController)
+    if (error.name === 'CanceledError' || error.code === 'ERR_CANCELED') {
+      return Promise.reject(error);
+    }
+
+    const status = error.response?.status;
+    const code   = status || 'Network';
     console.error(`[API] Error ${code}:`, error.message);
+
+    // 401 → sesión expirada / inválida
+    if (status === 401) {
+      removeToken();
+      // Solo redirigir si NO estamos ya en /login (evita loop)
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    }
+
+    // 403 → autenticado pero sin permisos. Toast global para el operador
+    // sepa que la acción la rechazó el backend por rol insuficiente.
+    if (status === 403 && typeof window !== 'undefined') {
+      const detail = error.response?.data?.detail || 'Permisos insuficientes para esta acción.';
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { type: 'error', message: detail, duration: 4000 },
+      }));
+    }
     return Promise.reject(error);
   }
 );

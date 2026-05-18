@@ -158,10 +158,10 @@ hlsAlwaysRemux: true
 #
 # Usamos 'fmp4' (HLS moderno, mismo contenedor que LL pero sin la
 # restriccion de 7 segments). Latencia practica ~ similar a LL en LAN.
-hlsVariant: fmp4
+hlsVariant: lowLatency
 # Buffer minimo en el muxer. Con fmp4 podemos bajar libremente.
 # Latencia teorica = hlsSegmentCount * hlsSegmentDuration = 3 * 1s = ~3s.
-hlsSegmentCount: 3
+hlsSegmentCount: 7
 # >= GOP/keyframe-period de la camara (las IP cams mandan IDR cada 1-2s).
 hlsSegmentDuration: 1s
 # hlsPartDuration solo aplica a 'lowLatency'; con fmp4 se ignora pero
@@ -372,9 +372,7 @@ paths:
 
   cam_sonoff:
     source:                     rtsp://placeholder/cam_sonoff
-    sourceOnDemand:             yes
-    sourceOnDemandStartTimeout: 5s
-    sourceOnDemandCloseAfter:   30s
+    sourceOnDemand:             no
     rtspTransport:              tcp
 
   all_others:
