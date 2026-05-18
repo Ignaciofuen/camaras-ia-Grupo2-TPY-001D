@@ -1,0 +1,149 @@
+# =============================================================================
+# Camaras-IA · Stack completo para Oracle Cloud (Always Free ARM, Ubuntu)
+# =============================================================================
+# Componentes:
+#   - frontend   (nginx + bundle React)
+#   - backend    (FastAPI + uvicorn)
+#   - postgres   (DB principal)
+#   - redis      (cache + pub/sub)
+#   - minio      (S3-compatible para snapshots + grabaciones)
+#   - mediamtx   (opcional — comentado por default, ver nota abajo)
+#
+# Componentes que QUEDAN EN TU PC (no acá):
+#   - detector.py (consume cámaras + corre YOLO)
+#   - ollama + llava (análisis de escenas)
+#
+# El detector local apunta a este stack vía Tailscale o IP pública.
+#
+# Levantarlo:    docker compose up -d
+# Detener:       docker compose down
+# Logs:          docker compose logs -f backend
+# =============================================================================
+
+services:
+
+  # ----------------------------- POSTGRES -----------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: camaras-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-camaras_ia}
+      POSTGRES_USER:     ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Definir POSTGRES_PASSWORD en .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Bootstrap: aplica schema.sql la primera vez que arranca
+      - ../tablas_base_de_datos/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../tablas_base_de_datos/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------- REDIS --------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: camaras-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ----------------------------- MINIO --------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: camaras-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER:?Definir en .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Definir en .env}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ----------------------------- BACKEND ------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: camaras-backend
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      minio:    { condition: service_healthy }
+    environment:
+      # Postgres
+      CAMARAS_DB_HOST:     postgres
+      CAMARAS_DB_PORT:     "5432"
+      CAMARAS_DB_NAME:     ${POSTGRES_DB:-camaras_ia}
+      CAMARAS_DB_USER:     ${POSTGRES_USER:-postgres}
+      CAMARAS_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # Redis
+      CAMARAS_REDIS_HOST:        redis
+      CAMARAS_REDIS_PORT:        "6379"
+      CAMARAS_REDIS_DB:          "0"
+      CAMARAS_REDIS_PASSWORD:    ""
+      CAMARAS_REDIS_HABILITADO:  "1"
+
+      # MinIO (interno usa servicio docker)
+      CAMARAS_MINIO_ENDPOINT:   http://minio:9000
+      CAMARAS_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      CAMARAS_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      CAMARAS_MINIO_BUCKET:     camaras-ia-snapshots
+      CAMARAS_MINIO_HABILITADO: "1"
+
+      # JWT
+      CAMARAS_JWT_SECRET:     ${JWT_SECRET:?Definir JWT_SECRET en .env}
+      CAMARAS_JWT_EXPIRE_MIN: "1440"
+
+      # Cooldown alertas
+      CAMARAS_ALERT_COOLDOWN_S: "30"
+    # Solo accesible internamente (nginx hace el proxy público)
+
+  # ----------------------------- FRONTEND -----------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: camaras-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      # - "443:443"  # cuando configures certbot/Let's Encrypt
+
+  # ----------------------------- MEDIAMTX (opcional) ------------------------
+  # Solo si querés streaming desde la nube. Para opción 1 (todo IA local),
+  # MediaMTX queda local también — comentar este bloque entero.
+  #
+  # mediamtx:
+  #   image: bluenviron/mediamtx:latest
+  #   container_name: camaras-mediamtx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8554:8554"   # RTSP
+  #     - "8888:8888"   # HLS
+  #     - "8889:8889"   # WebRTC
+  #     - "8189:8189/udp"  # ICE
+  #   volumes:
+  #     - ./bats/mediamtx.template.yml:/mediamtx.yml:ro
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

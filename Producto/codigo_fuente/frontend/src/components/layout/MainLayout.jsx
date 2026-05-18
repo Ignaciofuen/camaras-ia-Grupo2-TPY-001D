@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Navbar from './Navbar';
+import Toast from '../common/Toast';
 
 /**
  * MainLayout
@@ -10,7 +11,10 @@ import Navbar from './Navbar';
 const MainLayout = () => {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-black text-gray-100 select-none font-sans">
-      {/* Navegación Lateral: 
+      {/* Toasts globales (errores 403, mensajes de éxito/info) */}
+      <Toast />
+
+      {/* Navegación Lateral:
           Contiene el árbol de cámaras, vistas guardadas y configuración técnica.
       */}
       <Sidebar />

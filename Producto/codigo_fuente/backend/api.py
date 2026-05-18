@@ -41,7 +41,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
@@ -78,17 +78,66 @@ CONFIG_SECRETOS = {
 
 # =============================================================================
 # MediaMTX: base URL para construir las URLs HLS de cada camara.
-# El frontend usa esto directo (sin tener que armar la URL).
-# Se puede sobreescribir con env var MEDIAMTX_HLS_BASE.
+#
+# La arquitectura es "hibrida": Postgres/Backend/Frontend viven en Oracle,
+# pero MediaMTX corre en la PC local del operador detras de un tunel
+# Cloudflare TryCloudflare que regenera su URL en cada arranque.
+#
+# Por eso la URL base NO puede ser estatica: la PC local reporta su URL
+# actual a la DB (clave 'MEDIAMTX_HLS_DYNAMIC' en `configuracion_sistema`)
+# en cada arranque de `bats/start-mediamtx.bat`. El backend la lee en
+# cada llamada a /camaras y la inyecta como `hls_url` en cada fila.
+#
+# Fallback (env var MEDIAMTX_HLS_BASE -> default localhost:8888) se usa
+# solo si la DB no tiene el valor o si la consulta falla.
 # =============================================================================
-MEDIAMTX_HLS_BASE = _os.getenv("MEDIAMTX_HLS_BASE", "http://localhost:8888").rstrip("/")
+MEDIAMTX_HLS_FALLBACK = _os.getenv("MEDIAMTX_HLS_BASE", "http://localhost:8888").rstrip("/")
+
+
+def _obtener_hls_base_dinamico() -> str:
+    """
+    Lee la URL del tunel activa desde `configuracion_sistema`. La columna
+    `valor` es JSONB; segun la version de psycopg, puede venir:
+      - desempacada (str sin comillas): "https://abc.trycloudflare.com"
+      - cruda (str con comillas literales): '"https://abc.trycloudflare.com"'
+    Manejamos ambos casos.
+    """
+    try:
+        row = _query_one(
+            "SELECT valor FROM configuracion_sistema WHERE clave = 'MEDIAMTX_HLS_DYNAMIC'"
+        )
+        if not row:
+            return MEDIAMTX_HLS_FALLBACK
+        valor = row.get("valor")
+        if valor is None:
+            return MEDIAMTX_HLS_FALLBACK
+        # psycopg2 a veces nos devuelve el JSON crudo como str con comillas;
+        # psycopg3 lo desempaca solo. Soportamos los dos.
+        if isinstance(valor, str):
+            s = valor.strip()
+            if s.startswith('"') and s.endswith('"'):
+                s = s[1:-1]
+            return s.rstrip("/")
+        # Si vino como cualquier otro tipo (raro), aplastamos a str.
+        return str(valor).rstrip("/")
+    except Exception as e:
+        log.error(f"[api.dynamic_url] Fallo al leer URL de la DB: {e}")
+    return MEDIAMTX_HLS_FALLBACK
+
+
+# Backcompat: muchos lugares del codigo siguen referenciando MEDIAMTX_HLS_BASE
+# como si fuera la URL base estatica. Lo dejamos apuntando al fallback para
+# que no rompa nada (las funciones que SI son dinamicas usan
+# _obtener_hls_base_dinamico() directo).
+MEDIAMTX_HLS_BASE = MEDIAMTX_HLS_FALLBACK
 
 
 def _attach_hls_url(row: dict) -> dict:
     """Si la fila tiene mediamtx_path, agrega hls_url; si no, deja la fila igual."""
     path = row.get("mediamtx_path") if isinstance(row, dict) else None
     if path:
-        row["hls_url"] = f"{MEDIAMTX_HLS_BASE}/{path}/index.m3u8"
+        url_base = _obtener_hls_base_dinamico()
+        row["hls_url"] = f"{url_base}/{path}/index.m3u8"
     return row
 
 
@@ -168,6 +217,220 @@ def _query(sql: str, params: tuple = ()) -> list[dict]:
 def _query_one(sql: str, params: tuple = ()) -> Optional[dict]:
     rows = _query(sql, params)
     return rows[0] if rows else None
+
+
+# =============================================================================
+# AUTENTICACIÓN
+# =============================================================================
+from auth import (
+    autenticar_usuario, crear_jwt, hash_password,
+    get_current_user, require_admin,
+    get_user_by_email,
+)
+from pydantic import BaseModel
+
+
+class LoginIn(BaseModel):
+    username: str   # el frontend manda 'username' pero adentro es el email
+    password: str
+
+
+@app.post("/auth/login", tags=["auth"])
+def auth_login(body: LoginIn):
+    """
+    Valida email + password contra la DB. Si OK, devuelve JWT + datos del user.
+    El frontend (axios interceptor) guarda el token y lo manda en cada request.
+    """
+    user = autenticar_usuario(body.username, body.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    token = crear_jwt(user)
+    return {
+        "access_token": token,
+        "token_type":   "bearer",
+        "user": {
+            "username":        user["email"],
+            "email":           user["email"],
+            "nombre_completo": user["nombre_completo"],
+            "role":            user["rol"],
+        },
+    }
+
+
+@app.get("/auth/profile", tags=["auth"])
+def auth_profile(user: dict = Depends(get_current_user)):
+    """Devuelve el user actual a partir del JWT del header Authorization."""
+    return {
+        "username":        user["email"],
+        "email":           user["email"],
+        "nombre_completo": user["nombre_completo"],
+        "role":            user["rol"],
+    }
+
+
+@app.post("/auth/logout", tags=["auth"])
+def auth_logout(user: dict = Depends(get_current_user)):
+    """
+    Logout server-side. Como usamos JWT stateless, no hay nada que invalidar
+    en server (el cliente borra el token de localStorage). Endpoint queda
+    para futuro (revocar refresh tokens, registrar el evento, etc.)
+    """
+    return {"ok": True}
+
+
+# =============================================================================
+# USUARIOS (gestión, solo admin)
+# =============================================================================
+
+class UserIn(BaseModel):
+    name: str | None = None
+    username: str | None = None     # email (compat con frontend del compañero)
+    email: str | None = None
+    role: str | None = None         # 'admin' | 'operador' | 'visualizador'
+    status: str | None = None       # 'active' | 'inactive'
+    phone: str | None = None
+    temporaryPassword: str | None = None
+
+
+def _user_row_a_dict(row: dict) -> dict:
+    """Normaliza fila DB → formato esperado por el frontend del compañero."""
+    if not row:
+        return None
+    activo = bool(row.get("activo", True))
+    return {
+        "id":       str(row.get("id")),
+        "username": row.get("email"),
+        "email":    row.get("email"),
+        "name":     row.get("nombre_completo"),
+        "phone":    row.get("telefono"),
+        "role":     row.get("rol") or "visualizador",
+        "status":   "active" if activo else "inactive",
+        "activo":   activo,
+        "ultimo_acceso_en": row.get("ultimo_acceso_en"),
+        "creado_en":        row.get("creado_en"),
+    }
+
+
+def _set_rol(usuario_id: str, rol_nombre: str):
+    """Reemplaza el rol del user en usuarios_roles."""
+    if not rol_nombre:
+        return
+    with db._conn() as conn:
+        rol = conn.execute("SELECT id FROM roles WHERE nombre = %s", (rol_nombre,)).fetchone()
+        if not rol:
+            raise HTTPException(400, f"Rol desconocido: {rol_nombre}")
+        conn.execute("DELETE FROM usuarios_roles WHERE usuario_id = %s", (usuario_id,))
+        conn.execute(
+            "INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (%s, %s)",
+            (usuario_id, rol["id"]),
+        )
+
+
+@app.get("/usuarios", tags=["usuarios"])
+def list_usuarios(_: dict = Depends(require_admin)):
+    """Listar todos los usuarios (admin only)."""
+    sql = """
+        SELECT u.id, u.email, u.nombre_completo, u.telefono, u.activo,
+               u.ultimo_acceso_en, u.creado_en,
+               r.nombre AS rol
+          FROM usuarios u
+     LEFT JOIN usuarios_roles ur ON ur.usuario_id = u.id
+     LEFT JOIN roles r          ON r.id = ur.rol_id
+      ORDER BY u.creado_en DESC
+    """
+    rows = _query(sql)
+    return [_user_row_a_dict(r) for r in rows]
+
+
+@app.post("/usuarios", tags=["usuarios"])
+def create_usuario(body: UserIn, _: dict = Depends(require_admin)):
+    """Crear usuario. Requiere admin."""
+    email = body.email or body.username
+    if not email:
+        raise HTTPException(400, "Falta email/username")
+    if not body.temporaryPassword:
+        raise HTTPException(400, "Falta temporaryPassword")
+    if get_user_by_email(email):
+        raise HTTPException(409, "Ya existe un usuario con ese email")
+
+    pw_hash = hash_password(body.temporaryPassword)
+    activo  = (body.status or "active") in ("active", "activo")
+
+    with db._conn() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO usuarios (email, password_hash, nombre_completo, telefono, activo)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, email, nombre_completo, telefono, activo, creado_en
+            """,
+            (email, pw_hash, body.name, body.phone, activo),
+        ).fetchone()
+
+    if body.role:
+        _set_rol(row["id"], body.role)
+        row["rol"] = body.role
+
+    return _user_row_a_dict(row)
+
+
+@app.put("/usuarios/{user_id}", tags=["usuarios"])
+def update_usuario(user_id: str, body: UserIn, _: dict = Depends(require_admin)):
+    """Actualizar usuario."""
+    existing = _query_one(
+        "SELECT id FROM usuarios WHERE id = %s",
+        (user_id,),
+    )
+    if not existing:
+        raise HTTPException(404, "Usuario no encontrado")
+
+    sets, params = [], []
+    if body.email or body.username:
+        sets.append("email = %s")
+        params.append(body.email or body.username)
+    if body.name is not None:
+        sets.append("nombre_completo = %s")
+        params.append(body.name)
+    if body.phone is not None:
+        sets.append("telefono = %s")
+        params.append(body.phone)
+    if body.status is not None:
+        sets.append("activo = %s")
+        params.append(body.status in ("active", "activo"))
+    if body.temporaryPassword:
+        sets.append("password_hash = %s")
+        params.append(hash_password(body.temporaryPassword))
+
+    if sets:
+        params.append(user_id)
+        with db._conn() as conn:
+            conn.execute(
+                f"UPDATE usuarios SET {', '.join(sets)} WHERE id = %s",
+                tuple(params),
+            )
+
+    if body.role:
+        _set_rol(user_id, body.role)
+
+    # Devolver fila actualizada
+    sql = """
+        SELECT u.id, u.email, u.nombre_completo, u.telefono, u.activo,
+               u.ultimo_acceso_en, u.creado_en, r.nombre AS rol
+          FROM usuarios u
+     LEFT JOIN usuarios_roles ur ON ur.usuario_id = u.id
+     LEFT JOIN roles r          ON r.id = ur.rol_id
+         WHERE u.id = %s
+    """
+    return _user_row_a_dict(_query_one(sql, (user_id,)))
+
+
+@app.delete("/usuarios/{user_id}", tags=["usuarios"])
+def delete_usuario(user_id: str, current: dict = Depends(require_admin)):
+    """Borrar usuario (no podés borrarte a vos mismo)."""
+    if str(current.get("id")) == str(user_id):
+        raise HTTPException(400, "No podés borrar tu propio usuario")
+    with db._conn() as conn:
+        result = conn.execute("DELETE FROM usuarios WHERE id = %s", (user_id,))
+    return {"ok": True, "deleted_id": user_id}
 
 
 # =============================================================================
@@ -341,7 +604,7 @@ def get_camara(camara_id: str):
 
 
 @app.post("/sistema/reload-camaras", tags=["sistema"])
-def reload_camaras():
+def reload_camaras(_: dict = Depends(require_admin)):
     """
     Recarga la config de TODAS las cámaras activas en MediaMTX usando su API
     REST (`POST /v3/config/paths/patch/{path}`). NO reinicia procesos.
@@ -399,7 +662,7 @@ def reload_camaras():
 
 
 @app.patch("/camaras/{camara_id}/credenciales", tags=["camaras"])
-def patch_credenciales(camara_id: str, body: dict):
+def patch_credenciales(camara_id: str, body: dict, _: dict = Depends(require_admin)):
     """
     Actualiza usuario_rtsp y/o password_rtsp de una cámara.
     Body: { "usuario_rtsp": "...", "password_rtsp": "..." }
@@ -557,7 +820,7 @@ def get_grabacion_video(rec_id: int):
 
 
 @app.delete("/grabaciones/{rec_id:int}", tags=["grabaciones"])
-def delete_grabacion(rec_id: int):
+def delete_grabacion(rec_id: int, _: dict = Depends(require_admin)):
     """Borra una grabacion (DB + MinIO)."""
     row = _query_one("SELECT storage_key FROM grabaciones WHERE id = %s", (rec_id,))
     if not row:
@@ -872,7 +1135,7 @@ def list_alertas(
 
 
 @app.delete("/alertas/{alerta_id}", tags=["alertas"])
-def delete_alerta(alerta_id: str):
+def delete_alerta(alerta_id: str, _: dict = Depends(require_admin)):
     """
     Elimina una alerta por id. El evento_deteccion y el analisis_escena
     asociados NO se borran (son historial). Solo se borra el registro de
@@ -895,6 +1158,7 @@ def delete_alertas_batch(
     desde: Optional[str] = Query(None, description="ISO datetime inicio"),
     hasta: Optional[str] = Query(None, description="ISO datetime fin"),
     confirmar: bool = Query(False, description="Debe ser true para que se ejecute"),
+    _: dict = Depends(require_admin),
 ):
     """
     Borra alertas en batch. Por seguridad requiere ?confirmar=true.
@@ -1053,6 +1317,7 @@ def delete_evento(
         description="Si true, borra el evento_deteccion (snapshot + análisis + detecciones) "
                     "pero PRESERVA la alerta visible en /alertas. Requiere migration 009."
     ),
+    _: dict = Depends(require_admin),
 ):
     """
     Borra una captura. Tres modos:

@@ -1,9 +1,15 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import VideoPlayer from './VideoPlayer';
 import CameraOverlay from '../camera/overlays/CameraOverlay';
 import DetectionOverlay from '../camera/overlays/DetectionOverlay';
 import CameraControls from './CameraControls';
 import { useRecording } from '../../hooks/useRecording';
+
+// Cuanto esperamos antes de propagar una transicion "mala" (loading/error)
+// al badge de la UI. Las transiciones a 'playing' son inmediatas. Esto
+// elimina el flapping visual durante el warmup de LL-HLS (donde el muxer
+// puede tener 1-2 micro-blips antes de quedar estable).
+const STATUS_DEBOUNCE_MS = 1500;
 
 /**
  * CameraCard
@@ -21,8 +27,50 @@ const CameraCard = ({ camera, detections = [] }) => {
   const playerRef = useRef(null);
   const cardRef   = useRef(null);
 
+  // Timer pendiente para propagar una transicion "mala" del player al UI.
+  // Si entra una transicion buena (playing) o un nuevo estado mientras
+  // este timer esta vivo, lo cancelamos.
+  const statusDebounceRef = useRef(null);
+
+  /**
+   * Handler "anti-flap" para el streamStatus que viene del VideoPlayer.
+   *
+   * playing  -> aplicamos YA y cancelamos cualquier debounce pendiente
+   * (las buenas noticias se ven inmediato).
+   * loading  -> esperamos 1.5s antes de aplicar. Si en ese plazo entra
+   * error       un 'playing', cancelamos el cambio. Esto absorbe los
+   * micro-blips del muxer LL-HLS durante el warmup.
+   */
+  const handleStatusChange = useCallback((next) => {
+    if (next === 'playing') {
+      if (statusDebounceRef.current) {
+        clearTimeout(statusDebounceRef.current);
+        statusDebounceRef.current = null;
+      }
+      setStreamStatus('playing');
+      return;
+    }
+
+    // 'loading' o 'error' -> debounce
+    if (statusDebounceRef.current) {
+      clearTimeout(statusDebounceRef.current);
+    }
+    statusDebounceRef.current = setTimeout(() => {
+      setStreamStatus(next);
+      statusDebounceRef.current = null;
+    }, STATUS_DEBOUNCE_MS);
+  }, []);
+
+  // Cleanup del timer al desmontar el componente.
+  useEffect(() => () => {
+    if (statusDebounceRef.current) {
+      clearTimeout(statusDebounceRef.current);
+      statusDebounceRef.current = null;
+    }
+  }, []);
+
   /** Toggle del audio. Tambien le aviso al <video> directamente por si la
-   *  prop muted aun no se sincronizo. */
+   * prop muted aun no se sincronizo. */
   const handleToggleMute = useCallback(() => {
     setIsMuted((m) => {
       const next = !m;
@@ -45,7 +93,7 @@ const CameraCard = ({ camera, detections = [] }) => {
   }, []);
 
   /** Captura el frame actual y lo SUBE al servidor (aparece en Playback).
-   *  Si el upload falla, fallback a descarga local. */
+   * Si el upload falla, fallback a descarga local. */
   const handleSnapshot = useCallback(async () => {
     const dataUrl = playerRef.current?.captureFrame();
     if (!dataUrl) {
@@ -85,7 +133,7 @@ const CameraCard = ({ camera, detections = [] }) => {
   }, [camera]);
 
   /** Pausa/reanuda el stream del lado del cliente. La camara y el detector
-   *  no se enteran (solo el <video> local). */
+   * no se enteran (solo el <video> local). */
   const handleTogglePause = useCallback(() => {
     setIsPaused((p) => {
       const next = !p;
@@ -121,11 +169,21 @@ const CameraCard = ({ camera, detections = [] }) => {
 
   const isOnline = camera.activa ?? (camera.status === 'online');
 
-  // Construir URL WebRTC contra MediaMTX (puerto 8889 /whep).
   const buildStreamUrl = () => {
     if (!camera.nombre && camera.id == null && !camera.mediamtx_path) return null;
     const mtxPath = camera.mediamtx_path || camera.nombre || '';
-    return `http://localhost:8889/${mtxPath}/whep`;
+    const mode    = (import.meta.env.VITE_PLAYER_MODE || 'webrtc').toLowerCase();
+    
+    if (mode === 'hls') {
+      // MAGIA FUSIONADA: URL DINÁMICA DE CLOUDFLARE
+      if (camera.hls_url) {
+        return camera.hls_url;
+      }
+      const base = import.meta.env.VITE_HLS_BASE || 'http://localhost:8888';
+      return `${base.replace(/\/$/, '')}/${mtxPath}/index.m3u8`;
+    }
+    const base = import.meta.env.VITE_WEBRTC_BASE || 'http://localhost:8889';
+    return `${base.replace(/\/$/, '')}/${mtxPath}/whep`;
   };
   const streamUrl = buildStreamUrl();
   const hasStream = Boolean(streamUrl);
@@ -143,7 +201,7 @@ const CameraCard = ({ camera, detections = [] }) => {
             streamUrl={streamUrl}
             muted={isMuted}
             paused={isPaused}
-            onStatusChange={setStreamStatus}
+            onStatusChange={handleStatusChange}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-[#0a0a0a] text-gray-500 text-xs font-mono">

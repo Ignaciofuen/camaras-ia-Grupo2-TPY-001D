@@ -1,0 +1,42 @@
+# =============================================================================
+# .dockerignore — evita que estos directorios/archivos se metan en la imagen
+# =============================================================================
+
+# Node / frontend
+frontend/node_modules
+frontend/dist
+frontend/.vite
+frontend/.env.local
+frontend/.env.development
+
+# Python / backend
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.venv
+**/venv
+
+# Modelos pesados (los descarga el detector local, NO van a Oracle)
+backend/yolov8n.pt
+backend/yolov8s.pt
+backend/*.pt
+
+# Logs y temporales
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Editor
+.vscode
+.idea
+
+# Secretos (NUNCA en imágenes)
+.env
+.env.local
+.env.production
