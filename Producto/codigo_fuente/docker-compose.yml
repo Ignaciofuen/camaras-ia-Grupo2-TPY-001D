@@ -127,6 +127,32 @@ services:
       - "80:80"
       # - "443:443"  # cuando configures certbot/Let's Encrypt
 
+  # ----------------------------- TELEGRAM WORKER ----------------------------
+  # Lee la tabla `notificaciones` cada 5s y envia las pendientes al chat
+  # configurado en `configuracion_sistema.TELEGRAM_BOT_TOKEN`. Corre 24/7
+  # como un contenedor mas — antes vivia en la PC local del operador, lo
+  # que obligaba a tener la PC encendida para que salieran las alertas.
+  #
+  # Para habilitarlo basta con tener el token cargado en la DB; el worker
+  # se entera al arrancar y empieza a poolear.
+  # --------------------------------------------------------------------------
+  telegram:
+    build:
+      context: .
+      dockerfile: telegram/Dockerfile
+    container_name: camaras-telegram
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      # Mismas vars de DB que el backend (el worker hace polling a Postgres).
+      CAMARAS_DB_HOST:     postgres
+      CAMARAS_DB_PORT:     "5432"
+      CAMARAS_DB_NAME:     ${POSTGRES_DB:-camaras_ia}
+      CAMARAS_DB_USER:     ${POSTGRES_USER:-postgres}
+      CAMARAS_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    # Sin volumes ni ports: el worker no persiste estado ni expone red.
+
   # ----------------------------- MEDIAMTX (opcional) ------------------------
   # Solo si querés streaming desde la nube. Para opción 1 (todo IA local),
   # MediaMTX queda local también — comentar este bloque entero.
