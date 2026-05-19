@@ -1,0 +1,15 @@
+# Camaras-IA · Telegram Worker
+# ============================
+# Imagen mínima: solo cliente HTTP + DB. No incluye fastapi, redis ni boto3
+# porque el worker no los usa. Si en el futuro necesitas que escriba a Redis
+# (ej. publicar metricas), agregar 'redis==5.0.8'.
+
+# DB (psycopg con pool, mismo que el backend)
+psycopg[binary,pool]==3.2.3
+
+# Cliente HTTP para Telegram Bot API
+requests==2.32.3
+
+# Env loader (si el worker llega a leer .env directamente; redundante con
+# las env vars del docker-compose pero util en dev local)
+python-dotenv==1.0.1

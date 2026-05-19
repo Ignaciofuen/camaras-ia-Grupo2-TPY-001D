@@ -36,7 +36,14 @@ except Exception:
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELO = "llava"
-TIMEOUT = 200
+
+# [TUNING v2 · CPU-friendly]
+#   Timeout subido a 360s. En CPU, LLaVA 7B con la imagen 320x240
+#   y el prompt largo puede pasarse de 200s puntualmente (carga del
+#   sistema, primera inferencia post-arranque, etc.). 360s deja
+#   margen sin colgar el detector.
+#   Si tu maquina tiene GPU NVIDIA con CUDA, podes bajarlo a 60s.
+TIMEOUT = 360
 
 # [TUNING v2] Imagen más grande que la del analizador original
 #   para poder ver armas chicas (cuchillos, pistolas) y rasgos finos
@@ -101,8 +108,8 @@ RULES (strict):
             "format": "json",
             "options": {
                 "temperature": 0.0,
-                "num_predict": 200,
-                "num_ctx": 2048,
+                "num_predict": 180,      # respuesta de hasta ~180 tokens, suficiente para el JSON
+                "num_ctx": 1024,         # baja de 2048 -> 1024: ahorra ~30% de tiempo en CPU
                 "seed": 42
             }
         }, timeout=TIMEOUT)
