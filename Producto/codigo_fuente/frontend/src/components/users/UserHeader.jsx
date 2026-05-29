@@ -19,13 +19,6 @@ const UserHeader = ({ onNewUser, onRefresh, refreshing = false }) => {
         >
           {refreshing ? 'Actualizando...' : 'Actualizar'}
         </button>
-        <button
-          type="button"
-          onClick={onNewUser}
-          className="rounded border border-blue-500/40 bg-blue-600 px-4 py-2 text-xs font-bold uppercase tracking-wide text-white transition-colors hover:bg-blue-500"
-        >
-          Nuevo Usuario
-        </button>
       </div>
     </header>
   );
