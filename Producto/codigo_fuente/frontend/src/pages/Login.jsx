@@ -45,7 +45,7 @@ const Login = () => {
               type="email"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="admin@dominio.com"
+              placeholder=""
               autoComplete="username"
               className="w-full bg-[#1a1a1a] border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500 transition-colors"
               required

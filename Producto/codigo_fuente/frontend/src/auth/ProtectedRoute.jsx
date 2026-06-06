@@ -7,8 +7,10 @@ import { useAuth } from './useAuth';
  * redirect a /login. Mientras se valida la sesión, no renderiza nada.
  *
  * Props opcional:
- *   requireRole: 'admin' | 'operador' | ... → si el user no tiene ese rol,
- *                redirige a /  (página default)
+ *   requireRole: string | string[] → uno o varios roles permitidos.
+ *                Si el user no tiene ninguno de esos roles, redirige a /.
+ *                Ejemplo: requireRole="admin"
+ *                Ejemplo: requireRole={['admin', 'operador']}
  */
 const ProtectedRoute = ({ requireRole }) => {
   const { isAuthenticated, isLoading, user } = useAuth();
@@ -25,8 +27,12 @@ const ProtectedRoute = ({ requireRole }) => {
     return <Navigate to="/login" replace />;
   }
 
-  if (requireRole && user?.role !== requireRole) {
-    return <Navigate to="/" replace />;
+  if (requireRole) {
+    const userRole = user?.role || user?.rol;
+    const allowed  = Array.isArray(requireRole) ? requireRole : [requireRole];
+    if (!allowed.includes(userRole)) {
+      return <Navigate to="/" replace />;
+    }
   }
 
   return <Outlet />;

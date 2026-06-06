@@ -1,5 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../auth/useAuth';
+import PropTypes from 'prop-types';
 
 const baseNavItems = [
   { path: '/',          label: 'Dashboard' },
@@ -7,7 +8,11 @@ const baseNavItems = [
   { path: '/history',   label: 'Historial' },
   { path: '/playback',  label: 'Playback' },
   { path: '/system',    label: 'Sistema' },
-  { path: '/settings',  label: 'Configuración' },
+];
+
+// Items visibles para operador (solo operador, no admin)
+const operadorNavItems = [
+  { path: '/settings', label: 'Configuración', operadorOnly: true },
 ];
 
 // Items solo visibles para admin
@@ -15,17 +20,29 @@ const adminNavItems = [
   { path: '/users', label: 'Usuarios', adminOnly: true },
 ];
 
-const Sidebar = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { user } = useAuth();
+/**
+ * Sidebar
+ * onNavigate: callback opcional, se llama después de navegar (útil en móvil para cerrar el drawer).
+ */
+const Sidebar = ({ onNavigate }) => {
+  const navigate  = useNavigate();
+  const location  = useLocation();
+  const { user }  = useAuth();
 
-  const isAdmin = (user?.role || user?.rol) === 'admin' ||
-                  (user?.role || user?.rol) === 'administrator';
+  const userRole   = user?.role || user?.rol;
+  const isAdmin    = userRole === 'admin' || userRole === 'administrator';
+  const isOperador = userRole === 'operador';
 
-  const items = isAdmin
-    ? [...baseNavItems, ...adminNavItems]
-    : baseNavItems;
+  const items = [
+    ...baseNavItems,
+    ...(isOperador ? operadorNavItems : []),
+    ...(isAdmin    ? adminNavItems    : []),
+  ];
+
+  const handleNav = (path) => {
+    navigate(path);
+    onNavigate?.();
+  };
 
   return (
     <aside className="w-64 bg-[#121212] border-r border-gray-800 flex flex-col h-full flex-shrink-0">
@@ -41,7 +58,7 @@ const Sidebar = () => {
           return (
             <button
               key={item.path}
-              onClick={() => navigate(item.path)}
+              onClick={() => handleNav(item.path)}
               className={`w-full text-left px-3 py-2 text-sm font-medium transition-colors flex items-center justify-between ${
                 isActive
                   ? 'bg-blue-600 text-white'
@@ -52,6 +69,11 @@ const Sidebar = () => {
               {item.adminOnly && (
                 <span className="text-[8px] font-mono uppercase bg-purple-600/30 text-purple-300 px-1 py-0.5 rounded">
                   admin
+                </span>
+              )}
+              {item.operadorOnly && (
+                <span className="text-[8px] font-mono uppercase bg-blue-600/30 text-blue-300 px-1 py-0.5 rounded">
+                  oper
                 </span>
               )}
             </button>
@@ -72,6 +94,10 @@ const Sidebar = () => {
       )}
     </aside>
   );
+};
+
+Sidebar.propTypes = {
+  onNavigate: PropTypes.func,
 };
 
 export default Sidebar;
