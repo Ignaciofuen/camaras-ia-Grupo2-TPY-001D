@@ -135,7 +135,7 @@ const UserManager = () => {
   }
 
   return (
-    <div className="h-full w-full overflow-y-auto bg-[#0a0a0a] p-6 text-gray-100">
+    <div className="h-full w-full overflow-y-auto bg-[#0a0a0a] p-4 sm:p-6 text-gray-100">
       <UserHeader
         onNewUser={resetSelection}
         onRefresh={refresh}
@@ -156,7 +156,7 @@ const UserManager = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4 sm:gap-6">
         <section className="min-w-0 rounded border border-gray-800 bg-[#121212]">
           <UserFilters
             query={query}

@@ -50,8 +50,8 @@ const System = () => {
   const llavaAvg      = data?.totales?.latencia_llava_s_avg;
 
   return (
-    <div className="h-screen w-full bg-[#0a0a0a] p-8 overflow-auto">
-      <h1 className="text-xl text-gray-100 font-bold uppercase tracking-widest mb-6 border-b border-gray-800 pb-2">
+    <div className="h-full w-full bg-[#0a0a0a] p-4 sm:p-6 lg:p-8 overflow-auto">
+      <h1 className="text-lg sm:text-xl text-gray-100 font-bold uppercase tracking-widest mb-6 border-b border-gray-800 pb-2">
         Estado del Sistema
       </h1>
 
@@ -154,16 +154,18 @@ const Section = ({ title, children }) => (
 
 const Table = ({ headers, children }) => (
   <div className="bg-[#161616] border border-gray-800 rounded overflow-hidden">
-    <table className="w-full text-xs font-mono">
-      <thead className="bg-[#1e1e1e]">
-        <tr>
-          {headers.map((h) => (
-            <th key={h} className="text-left text-gray-500 uppercase tracking-wider px-4 py-2 text-[10px]">{h}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>{children}</tbody>
-    </table>
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs font-mono min-w-[500px]">
+        <thead className="bg-[#1e1e1e]">
+          <tr>
+            {headers.map((h) => (
+              <th key={h} className="text-left text-gray-500 uppercase tracking-wider px-4 py-2 text-[10px]">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
   </div>
 );
 

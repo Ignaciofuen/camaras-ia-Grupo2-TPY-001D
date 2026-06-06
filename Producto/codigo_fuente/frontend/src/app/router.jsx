@@ -28,7 +28,13 @@ export default function AppRouter() {
             <Route path="/history"   element={<History />} />
             <Route path="/playback"  element={<Playback />} />
             <Route path="/system"    element={<System />} />
-            <Route path="/settings"  element={<Settings />} />
+          </Route>
+
+          {/* SOLO OPERADOR — configuración de credenciales de cámaras */}
+          <Route element={<ProtectedRoute requireRole="operador" />}>
+            <Route element={<MainLayout />}>
+              <Route path="/settings" element={<Settings />} />
+            </Route>
           </Route>
 
           {/* SOLO ADMIN — usuarios */}

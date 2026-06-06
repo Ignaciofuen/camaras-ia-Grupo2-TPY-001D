@@ -80,11 +80,11 @@ const History = () => {
   };
 
   return (
-    <div className="h-screen w-full bg-[#0a0a0a] flex flex-col overflow-hidden">
+    <div className="h-full w-full bg-[#0a0a0a] flex flex-col overflow-hidden">
 
       {/* Header */}
-      <header className="px-6 py-4 border-b border-gray-800 shrink-0">
-        <h1 className="text-xl text-gray-100 font-bold uppercase tracking-widest">
+      <header className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-800 shrink-0">
+        <h1 className="text-lg sm:text-xl text-gray-100 font-bold uppercase tracking-widest">
           Historial de Eventos
         </h1>
         <p className="text-xs text-gray-500 font-mono mt-1">
@@ -93,7 +93,7 @@ const History = () => {
       </header>
 
       {/* Filtros */}
-      <div className="px-6 py-3 bg-[#161616] border-b border-gray-800 flex flex-wrap gap-3 items-end shrink-0">
+      <div className="px-4 sm:px-6 py-3 bg-[#161616] border-b border-gray-800 flex flex-wrap gap-2 sm:gap-3 items-end shrink-0">
         <FilterField label="Desde">
           <input
             type="date"

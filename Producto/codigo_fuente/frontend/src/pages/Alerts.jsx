@@ -70,13 +70,13 @@ const Alerts = () => {
   }, []);
 
   return (
-    <div className="flex flex-col h-screen w-full bg-[#0a0a0a]">
+    <div className="flex flex-col h-full w-full bg-[#0a0a0a]">
       <AlertHeader
         activeCount={alerts.length}
         onClearByDate={() => setClearModalOpen(true)}
       />
 
-      <main className="flex-1 overflow-hidden flex justify-center p-4">
+      <main className="flex-1 overflow-hidden flex justify-center p-2 sm:p-4">
         <div className="w-full max-w-4xl h-full shadow-2xl border border-gray-800 rounded-lg overflow-hidden">
           <AlertSection alerts={alerts} onDelete={handleDelete} />
         </div>
