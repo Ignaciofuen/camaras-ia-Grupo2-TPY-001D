@@ -272,8 +272,8 @@ for cam in CONFIGURACION_CAMARAS:
             url = f"rtsp://localhost:8554/{mtx_path}"
             print(f"[MEDIAMTX] {cam['nombre']} consume desde MediaMTX: {url}")
         enlaces_rtsp[cam["nombre"]] = url
-        if cam["id_db"]:
-            db.actualizar_salud_camara(cam["id_db"], estado="online")
+        # [SALUD] NO marcamos online aqui: esperamos al primer frame real
+        #         en el loop principal para evitar falsos positivos.
         continue
 
     # Modo legacy: conexión RTSP directa a la cámara IP (con descubrimiento ARP)
@@ -456,7 +456,7 @@ class AnalizadorAsync:
         if alerta_id:
             es_sospechoso = bool(resultado.get("sospechoso", False))
             nivel = str(resultado.get("nivel", "bajo")).lower()
-            if es_sospechoso or nivel in ("alto", "medio"):
+            if es_sospechoso or nivel in ("bajo", "alto", "medio"):
                 chat_id = db.config("TELEGRAM_CHAT_ID")
                 if chat_id:
                     texto = (
@@ -527,7 +527,12 @@ for cfg in CONFIGURACION_CAMARAS:
         "alerta":         False,
         "texto":          "",
         "hasta":          0,
-        "ultimo_frame":   None,
+        "ultimo_frame":    None,
+        # [SALUD] Seguimiento del estado real del stream (basado en frames).
+        # Se actualiza en el loop principal: online cuando llegan frames,
+        # offline si pasan >15s sin ninguno.
+        "ultimo_frame_ok":  None,   # timestamp del ultimo frame exitoso
+        "estado_reportado": None,   # ultimo estado enviado a la DB
         # [DB] Arranca encendida solo la que tiene análisis profundo (LLaVA).
         #      La "solo_yolo" inicia apagada y se prende con la tecla 'C' (como antes).
         "activa":         cfg["modo_analisis"] == "yolo_llava",
@@ -539,6 +544,19 @@ for cfg in CONFIGURACION_CAMARAS:
     camaras.append(cam_obj)
 
 time.sleep(2) # Esperar a que los streams conecten
+
+# [SALUD] Limpiar estados residuales de sesiones anteriores.
+# Las cámaras inactivas (solo_yolo, activa=False) nunca pasan por el loop
+# principal, así que su estado_salud en la DB puede quedar en 'online'
+# de una sesión previa. Lo marcamos offline explícitamente al arrancar.
+for cam in camaras:
+    if not cam["activa"] and cam["id_db"]:
+        db.actualizar_salud_camara(
+            cam["id_db"], estado="offline",
+            error_msg="Cámara inactiva al arrancar el detector",
+        )
+        print(f"[SALUD] {cam['nombre']} → offline (inactiva al arrancar)")
+
 frame_count = 0
 alertas_totales = 0
 
@@ -558,7 +576,28 @@ while True:
 
         frame = cam["vs"].read()
         if frame is None:
+            # [SALUD] Si la camara alguna vez entrego frames pero ahora lleva
+            # mas de 15s sin datos → marcar offline en la DB.
+            if (
+                cam["ultimo_frame_ok"] is not None
+                and time.time() - cam["ultimo_frame_ok"] > 15
+                and cam["estado_reportado"] != "offline"
+                and cam["id_db"]
+            ):
+                cam["estado_reportado"] = "offline"
+                db.actualizar_salud_camara(
+                    cam["id_db"], estado="offline",
+                    error_msg="Sin frames del stream >15s",
+                )
+                print(f"[SALUD] {cam['nombre']} → offline (sin frames)")
             continue
+
+        # [SALUD] Frame OK → si no estaba online, actualizamos la DB.
+        cam["ultimo_frame_ok"] = time.time()
+        if cam["estado_reportado"] != "online" and cam["id_db"]:
+            cam["estado_reportado"] = "online"
+            db.actualizar_salud_camara(cam["id_db"], estado="online")
+            print(f"[SALUD] {cam['nombre']} → online (frames OK)")
 
         annotated_frame = frame.copy()
 

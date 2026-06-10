@@ -36,23 +36,33 @@ const Dashboard = () => {
   // SSE de DETECCIONES (bboxes YOLO frame-por-frame, ~5fps por camara).
   const { detectionsMap } = useDetections('/detecciones/stream');
 
+  // Elige la mejor camara para el modo 1x1:
+  //   - Si exactamente una tiene estado_salud='online' → esa
+  //   - Si cero o varias online → primera del array (Principal viene primero)
+  const pickBestCamera = useCallback((cams) => {
+    if (!cams || cams.length === 0) return null;
+    const online = cams.filter((c) => c.estado_salud === 'online');
+    return online.length === 1 ? online[0] : cams[0];
+  }, []);
+
   // Filtrar camaras segun layout. En 1x1 mostramos solo la activa.
   const visibleCameras = useMemo(() => {
     if (!cameras || cameras.length === 0) return [];
     if (layout === '1x1') {
-      const active = cameras.find((c) => c.id === activeCameraId) || cameras[0];
+      const active = cameras.find((c) => c.id === activeCameraId) || pickBestCamera(cameras);
       return active ? [active] : [];
     }
     const maxByLayout = { '2x2': 4, '3x3': 9 };
     return cameras.slice(0, maxByLayout[layout] || cameras.length);
-  }, [cameras, layout, activeCameraId]);
+  }, [cameras, layout, activeCameraId, pickBestCamera]);
 
-  // Al cambiar el layout a 1x1, si no hay camara activa, marcar la primera.
+  // Al cambiar al layout 1x1 sin camara activa → elegir la mejor segun estado.
   useEffect(() => {
     if (layout === '1x1' && !activeCameraId && cameras && cameras.length > 0) {
-      setActiveCameraId(cameras[0].id);
+      const best = pickBestCamera(cameras);
+      if (best) setActiveCameraId(best.id);
     }
-  }, [layout, activeCameraId, cameras]);
+  }, [layout, activeCameraId, cameras, pickBestCamera]);
 
   const handleCameraClick = useCallback((camera) => {
     setActiveCameraId(camera.id);
