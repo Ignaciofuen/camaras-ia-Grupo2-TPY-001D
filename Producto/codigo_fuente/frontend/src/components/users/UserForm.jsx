@@ -31,7 +31,7 @@ const getInitialForm = (selectedUser) => {
   };
 };
 
-const UserForm = ({ selectedUser, saving, onSubmit, onCancel }) => {
+const UserForm = ({ selectedUser, saving, onSubmit, onCancel, isSelf }) => {
   const [form, setForm] = useState(() => getInitialForm(selectedUser));
   const isEditing = Boolean(selectedUser);
 
@@ -96,7 +96,9 @@ const UserForm = ({ selectedUser, saving, onSubmit, onCancel }) => {
             name="role"
             value={form.role}
             onChange={handleChange}
-            className="rounded border border-gray-700 bg-[#1a1a1a] px-3 py-2 text-sm normal-case tracking-normal text-gray-200 outline-none transition-colors focus:border-blue-500"
+            disabled={isSelf}
+            title={isSelf ? "No puedes cambiar tu propio rol" : ""}
+            className="rounded border border-gray-700 bg-[#1a1a1a] px-3 py-2 text-sm normal-case tracking-normal text-gray-200 outline-none transition-colors focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {roleOptions.map((role) => (
               <option key={role.value} value={role.value}>

@@ -96,9 +96,10 @@ export const useUsers = () => {
     const active = users.filter((user) => (
       user.status === 'active' || user.estado === 'activo'
     )).length;
-    const admins = users.filter((user) => (
-      user.role === 'administrator' || user.rol === 'administrator'
-    )).length;
+    const admins = users.filter((user) => {
+      const role = user.role || user.rol || '';
+      return role === 'administrator' || role === 'admin';
+    }).length;
 
     return {
       total: users.length,

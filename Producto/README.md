@@ -171,8 +171,8 @@ start.bat            # detector con análisis v1 (genérico, más rápido)
 | Rol | Color | Puede |
 |---|---|---|
 | **Visualizador** | Gris | Login · Ver cámaras en vivo · Recibir alertas · Ver historial · Reproducir grabaciones |
-| **Operador** | Azul | Todo lo anterior **+** Tomar snapshot · Grabar manual · Validar alerta |
-| **Admin** | Violeta | Todo lo anterior **+** Gestionar cámaras · Cambiar credenciales RTSP · Gestionar usuarios · Eliminar alertas/grabaciones · Recargar cámaras |
+| **Operador** | Azul | Todo lo anterior **+** Tomar snapshot · Grabar manual · Validar alerta · Cambiar credenciales RTSP |
+| **Admin** | Violeta | Todo lo anterior **+** Gestionar cámaras · Gestionar usuarios · Eliminar alertas/grabaciones · Recargar cámaras |
 
 Las acciones de admin están protegidas en el backend con el decorador `require_admin`. Si un Operador/Visualizador intenta una acción restringida, recibe 403 y el frontend muestra un toast rojo.
 

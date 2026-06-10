@@ -42,6 +42,7 @@ const UserManager = () => {
   const [roleFilter, setRoleFilter] = useState('all');
   const [localError, setLocalError] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [pendingPromotionPayload, setPendingPromotionPayload] = useState(null);
 
   const canManageUsers = isAdminRole(currentUser?.role || currentUser?.rol);
 
@@ -89,6 +90,18 @@ const UserManager = () => {
       return;
     }
 
+    const newRoleIsAdmin = isAdminRole(payload.role || payload.rol);
+    const oldRoleIsAdmin = selectedUser ? isAdminRole(getUserRole(selectedUser)) : false;
+
+    if (newRoleIsAdmin && !oldRoleIsAdmin) {
+      setPendingPromotionPayload(payload);
+      return;
+    }
+
+    await executeSubmit(payload);
+  };
+
+  const executeSubmit = async (payload) => {
     if (selectedUser) {
       await updateUser(getUserId(selectedUser), payload);
       resetSelection();
@@ -97,6 +110,13 @@ const UserManager = () => {
 
     await createUser(payload);
     resetSelection();
+  };
+
+  const handleConfirmPromotion = async () => {
+    if (pendingPromotionPayload) {
+      await executeSubmit(pendingPromotionPayload);
+      setPendingPromotionPayload(null);
+    }
   };
 
   const handleToggleStatus = async (user) => {
@@ -181,6 +201,7 @@ const UserManager = () => {
           saving={saving}
           onSubmit={handleSubmit}
           onCancel={resetSelection}
+          isSelf={selectedUser && currentUser && getUserEmail(selectedUser) === getUserEmail(currentUser)}
         />
       </div>
 
@@ -196,6 +217,15 @@ const UserManager = () => {
         danger
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingPromotionPayload)}
+        title="¿Promover a Administrador?"
+        message="Esta acción le dará a este usuario acceso total al sistema, incluyendo la gestión de usuarios y configuraciones críticas."
+        confirmLabel="Promover"
+        onConfirm={handleConfirmPromotion}
+        onCancel={() => setPendingPromotionPayload(null)}
       />
     </div>
   );

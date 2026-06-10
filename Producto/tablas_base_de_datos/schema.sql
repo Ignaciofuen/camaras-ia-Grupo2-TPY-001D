@@ -417,12 +417,26 @@ INSERT INTO configuracion_sistema (clave, valor, descripcion) VALUES
 -- =============================================================================
 
 -- Vista unificada para /health: junta cámaras (hardware) + servicios (software).
--- Trae SOLO el estado más reciente de cada componente (DISTINCT ON).
+-- Lógica para cámaras:
+--   · Si el detector NO tiene heartbeat reciente en salud_servicios (90s) → todas offline
+--   · Si el detector está vivo → se usa camaras.estado_salud (lo que el detector reportó)
+-- Esto evita falsos "offline" cuando la cámara está OK pero sin detecciones recientes,
+-- y refleja correctamente el estado cuando el detector está apagado.
 CREATE VIEW v_salud_sistema AS
 SELECT
     'camara'::VARCHAR          AS tipo,
     c.nombre                   AS componente,
-    c.estado_salud             AS estado,
+    CASE
+        -- Si el detector está caído (sin heartbeat en 90s) → todas offline
+        WHEN NOT EXISTS (
+            SELECT 1 FROM salud_servicios
+            WHERE servicio = 'detector'
+              AND estado = 'online'
+              AND verificado_en > now() - INTERVAL '90 seconds'
+        ) THEN 'offline'
+        -- Detector vivo: confiamos en camaras.estado_salud
+        ELSE COALESCE(c.estado_salud, 'desconocido')
+    END                        AS estado,
     c.ultima_conexion_en       AS visto_en,
     NULL::INTEGER              AS latencia_ms,
     NULL::JSONB                AS metrica,
@@ -446,6 +460,7 @@ FROM (
     FROM salud_servicios
     ORDER BY servicio, verificado_en DESC
 ) s;
+
 
 CREATE VIEW v_alertas_completas AS
 SELECT

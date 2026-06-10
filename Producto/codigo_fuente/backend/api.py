@@ -875,9 +875,8 @@ def list_snapshots(
                   FROM alertas a
              LEFT JOIN analisis_escena ae ON ae.id = a.analisis_id
                  WHERE a.evento_id = e.id
-                   AND ae.nivel IS NOT NULL
-              ORDER BY a.disparada_en
-                 LIMIT 1) AS nivel
+                           ORDER BY a.disparada_en
+                  LIMIT 1) AS nivel
           FROM eventos_deteccion e
           JOIN camaras c ON c.id = e.camara_id
           {where}
