@@ -236,3 +236,10 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
     if user.get("rol") != "admin":
         raise HTTPException(403, "Requiere rol admin")
     return user
+
+
+def require_operator(user: dict = Depends(get_current_user)) -> dict:
+    """Como get_current_user pero exige rol operador o admin."""
+    if user.get("rol") not in ("admin", "operador"):
+        raise HTTPException(403, "Requiere rol operador o admin")
+    return user
