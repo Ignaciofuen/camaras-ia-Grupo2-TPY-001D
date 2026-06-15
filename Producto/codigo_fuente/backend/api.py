@@ -224,7 +224,7 @@ def _query_one(sql: str, params: tuple = ()) -> Optional[dict]:
 # =============================================================================
 from auth import (
     autenticar_usuario, crear_jwt, hash_password,
-    get_current_user, require_admin,
+    get_current_user, require_admin, require_operator,
     get_user_by_email,
 )
 from pydantic import BaseModel
@@ -604,7 +604,7 @@ def get_camara(camara_id: str):
 
 
 @app.post("/sistema/reload-camaras", tags=["sistema"])
-def reload_camaras(_: dict = Depends(require_admin)):
+def reload_camaras(_: dict = Depends(require_operator)):
     """
     Recarga la config de TODAS las cámaras activas en MediaMTX usando su API
     REST (`POST /v3/config/paths/patch/{path}`). NO reinicia procesos.
@@ -662,7 +662,7 @@ def reload_camaras(_: dict = Depends(require_admin)):
 
 
 @app.patch("/camaras/{camara_id}/credenciales", tags=["camaras"])
-def patch_credenciales(camara_id: str, body: dict, _: dict = Depends(require_admin)):
+def patch_credenciales(camara_id: str, body: dict, _: dict = Depends(require_operator)):
     """
     Actualiza usuario_rtsp y/o password_rtsp de una cámara.
     Body: { "usuario_rtsp": "...", "password_rtsp": "..." }
